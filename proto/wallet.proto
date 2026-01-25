@@ -1,0 +1,39 @@
+syntax = "proto3";
+package crypto_wallet.v1;
+
+service WalletService {
+  rpc CreateWallet (CreateWalletRequest) returns (WalletInfo);
+  rpc GetAddress (GetAddressRequest) returns (AddressResponse);
+  rpc SignTransaction (SignRequest) returns (SignResponse);
+}
+
+message CreateWalletRequest {
+  string label = 1;
+}
+
+message WalletInfo {
+  string id = 1;
+  string label = 2;
+}
+
+message GetAddressRequest {
+  string wallet_id = 1;
+  string network = 2; // eth, bsc, tron, sol, ton
+  uint32 index = 3;
+}
+
+message AddressResponse {
+  string address = 1;
+  string network = 2;
+}
+
+message SignRequest {
+  string wallet_id = 1;
+  string network = 2;
+  uint32 index = 3;
+  string unsigned_tx = 4;
+}
+
+message SignResponse {
+  string signed_tx = 1;
+}

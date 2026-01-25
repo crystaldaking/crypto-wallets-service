@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/prod.Dockerfile
+      target: dev
+    volumes:
+      - .:/app
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    environment:
+      - APP__DATABASE__URL=postgres://postgres:postgres@db:5432/crypto_wallets
+      - APP__VAULT__ADDRESS=http://vault:8200
+    depends_on:
+      - db
+      - vault
+
+  db:
+    image: postgres:18.1
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=crypto_wallets
+    ports:
+      - "5432:5432"
+
+  vault:
+    image: hashicorp/vault:1.21.2
+    environment:
+      - VAULT_DEV_ROOT_TOKEN_ID=root
+      - VAULT_ADDR=http://0.0.0.0:8200
+    ports:
+      - "8200:8200"
+    cap_add:
+      - IPC_LOCK
+    entrypoint: vault server -dev -dev-root-token-id=root -dev-listen-address=0.0.0.0:8200
