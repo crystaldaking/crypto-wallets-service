@@ -210,29 +210,30 @@ use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 pub fn create_router(state: Arc<AppState>) -> Router {
     let (prometheus_layer, metric_handle) = PrometheusMetricLayer::pair();
 
-    // Rate limit: 10 requests per second per IP
-    let governor_conf = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(10)
-            .burst_size(5)
-            .finish()
-            .unwrap(),
-    );
-
-    let protected_routes = Router::new()
+    // Configurable Rate Limit
+    let rate_limit_conf = &state.config.server.rate_limit;
+    let mut protected_routes = Router::new()
         .route("/api/v1/wallets", post(create_wallet).get(list_wallets))
         .route("/api/v1/wallets/:id/address/:network", get(get_address))
-        .route("/api/v1/wallets/:id/sign", post(sign_transaction))
-        .layer(
-            ServiceBuilder::new()
-                .layer(middleware::from_fn_with_state(
-                    state.clone(),
-                    auth_middleware,
-                ))
-                .layer(GovernorLayer {
-                    config: governor_conf,
-                }),
+        .route("/api/v1/wallets/:id/sign", post(sign_transaction));
+
+    if rate_limit_conf.enabled {
+        let governor_conf = Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(rate_limit_conf.requests_per_second as u64)
+                .burst_size(rate_limit_conf.burst_size)
+                .finish()
+                .unwrap(),
         );
+        protected_routes = protected_routes.layer(GovernorLayer {
+            config: governor_conf,
+        });
+    }
+
+    let protected_routes = protected_routes.layer(middleware::from_fn_with_state(
+        state.clone(),
+        auth_middleware,
+    ));
 
     let public_routes = Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
@@ -246,7 +247,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
                 .layer(prometheus_layer)
                 .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
                 .layer(PropagateRequestIdLayer::x_request_id())
-                .layer(TraceLayer::new_for_http()),
+                .layer(TraceLayer::new_for_http())
+                .layer(tower_http::catch_panic::CatchPanicLayer::new()),
         )
         .with_state(state)
 }
@@ -257,17 +259,29 @@ async fn auth_middleware(
     request: Request,
     next: Next,
 ) -> Result<AxumResponse, StatusCode> {
+    // Log headers (redacted)
+    tracing::info!("Auth middleware: Checking request to {}", request.uri());
+
     if let Some(required_key) = &state.config.server.api_key {
         // Use lowercase for header lookup
         match headers.get("x-api-key") {
-            Some(key) if key == required_key => Ok(next.run(request).await),
+            Some(key) => {
+                if key == required_key {
+                    tracing::info!("Auth middleware: Key matched");
+                    Ok(next.run(request).await)
+                } else {
+                    tracing::warn!("Unauthorized access attempt. Invalid Key.");
+                    Err(StatusCode::UNAUTHORIZED)
+                }
+            }
             _ => {
-                tracing::warn!("Unauthorized access attempt. Headers: {:?}", headers);
+                tracing::warn!("Unauthorized access attempt. Missing Key.");
                 Err(StatusCode::UNAUTHORIZED)
             }
         }
     } else {
         // No key configured, allow access
+        tracing::info!("Auth middleware: No key configured, proceeding");
         Ok(next.run(request).await)
     }
 }
@@ -326,6 +340,8 @@ async fn create_wallet(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<CreateWalletRequest>,
 ) -> Result<Json<crate::db::MasterWallet>, (axum::http::StatusCode, String)> {
+    tracing::info!("Received create_wallet request: label={}", payload.label);
+
     let length = payload.mnemonic_length.unwrap_or(12);
     if length != 12 && length != 24 {
         return Err((
@@ -334,6 +350,7 @@ async fn create_wallet(
         ));
     }
 
+    tracing::info!("Generating mnemonic...");
     let mnemonic = WalletManager::generate_mnemonic(length).map_err(|e: anyhow::Error| {
         tracing::error!("Failed to generate mnemonic: {}", e);
         (
@@ -342,6 +359,7 @@ async fn create_wallet(
         )
     })?;
 
+    tracing::info!("Encrypting mnemonic...");
     let encrypted: String =
         state
             .vault
@@ -355,6 +373,7 @@ async fn create_wallet(
                 )
             })?;
 
+    tracing::info!("Saving wallet to DB...");
     let wallet: crate::db::MasterWallet = state
         .db
         .create_wallet(&payload.label, &encrypted)
@@ -368,6 +387,7 @@ async fn create_wallet(
         })?;
 
     // Audit Log
+    tracing::info!("Wallet saved. Logging audit event...");
     let _ = state
         .db
         .log_audit_event(
@@ -380,6 +400,7 @@ async fn create_wallet(
         .await
         .map_err(|e| tracing::error!("Failed to write audit log: {}", e));
 
+    tracing::info!("create_wallet completed successfully");
     Ok(Json(wallet))
 }
 

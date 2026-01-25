@@ -1,6 +1,11 @@
 [server]
 port = 3000
 
+[server.rate_limit]
+enabled = true
+requests_per_second = 10
+burst_size = 10
+
 [database]
 url = "postgres://postgres:postgres@localhost:5432/crypto_wallets"
 

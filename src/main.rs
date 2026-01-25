@@ -67,7 +67,11 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("HTTP Server listening on {}", http_addr);
 
     let listener = tokio::net::TcpListener::bind(http_addr).await?;
-    let http_server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
+    let http_server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal());
 
     // Run both
     tokio::select! {

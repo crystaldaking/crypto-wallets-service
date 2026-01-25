@@ -2,9 +2,17 @@ use config::{Config, ConfigError, Environment, File};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct RateLimitConfig {
+    pub enabled: bool,
+    pub requests_per_second: u32,
+    pub burst_size: u32,
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct ServerConfig {
     pub port: u16,
     pub api_key: Option<String>,
+    pub rate_limit: RateLimitConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]

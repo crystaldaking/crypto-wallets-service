@@ -100,6 +100,11 @@ async fn full_integration_test() {
         server: config::ServerConfig {
             port: 0,
             api_key: Some("test-secret-key".to_string()),
+            rate_limit: config::RateLimitConfig {
+                enabled: true,
+                requests_per_second: 10,
+                burst_size: 5,
+            },
         },
         database: config::DatabaseConfig {
             url: db_url.clone(),

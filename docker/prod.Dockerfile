@@ -1,12 +1,12 @@
 # Development
-FROM rust:1.80 as dev
+FROM rust:latest as dev
 WORKDIR /app
-RUN cargo install cargo-watch
+RUN cargo install cargo-watch --version 8.5.2 --locked
 COPY . .
 CMD ["cargo-watch", "-x", "run"]
 
 # Production
-FROM rust:1.80-slim as builder
+FROM rust:slim as builder
 WORKDIR /app
 # Install protobuf compiler for tonic
 RUN apt-get update && apt-get install -y protobuf-compiler libssl-dev pkg-config
