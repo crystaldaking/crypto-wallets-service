@@ -1,0 +1,10 @@
+[server]
+port = 3000
+
+[database]
+url = "postgres://postgres:postgres@localhost:5432/crypto_wallets"
+
+[vault]
+address = "http://localhost:8200"
+token = "root"
+key_id = "wallet-master-key"
