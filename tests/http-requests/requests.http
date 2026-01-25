@@ -1,0 +1,42 @@
+### Health Check
+GET {{base_url}}/api/v1/health
+
+### Create Wallet
+POST {{base_url}}/api/v1/wallets
+X-Api-Key: {{api_key}}
+Content-Type: application/json
+
+{
+  "label": "My Primary Wallet"
+}
+
+> {%
+    client.global.set("wallet_id", response.body.id);
+%}
+
+### List Wallets
+GET {{base_url}}/api/v1/wallets
+X-Api-Key: {{api_key}}
+
+### Get Address (ETH)
+GET {{base_url}}/api/v1/wallets/{{wallet_id}}/address/eth?index=0
+X-Api-Key: {{api_key}}
+
+### Get Address (TRON)
+GET {{base_url}}/api/v1/wallets/{{wallet_id}}/address/tron?index=0
+X-Api-Key: {{api_key}}
+
+### Get Address (SOL)
+GET {{base_url}}/api/v1/wallets/{{wallet_id}}/address/sol?index=0
+X-Api-Key: {{api_key}}
+
+### Sign Transaction
+POST {{base_url}}/api/v1/wallets/{{wallet_id}}/sign
+X-Api-Key: {{api_key}}
+Content-Type: application/json
+
+{
+  "network": "eth",
+  "index": 0,
+  "unsigned_tx": "...hex..."
+}
