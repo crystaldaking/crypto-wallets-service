@@ -1,6 +1,6 @@
 [package]
 name = "crypto-wallets-service"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
@@ -43,6 +43,15 @@ anyhow = "1.0"
 rand = "0.8"
 sha2 = "0.10.9"
 crc16 = "0.4.0"
+
+# Advanced Features
+utoipa = { version = "4.2", features = ["axum_extras", "uuid"] }
+utoipa-swagger-ui = { version = "6", features = ["axum"] }
+metrics = "0.22"
+metrics-exporter-prometheus = "0.13"
+axum-prometheus = "0.6"
+tower_governor = "0.4"
+governor = "0.6"
 
 [build-dependencies]
 tonic-build = "0.12"

@@ -1,17 +1,19 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Postgres};
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
-use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+use utoipa::ToSchema;
+
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
 pub struct MasterWallet {
     pub id: Uuid,
     pub label: String,
-    pub encrypted_phrase: String,
+    pub encrypted_phrase: String, // Note: usually we might not want to show this in docs/response? But it's in the struct.
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
 pub struct DerivedAddress {
     pub id: Uuid,
     pub wallet_id: Uuid,
@@ -31,9 +33,13 @@ impl DbClient {
         Self { pool }
     }
 
-    pub async fn create_wallet(&self, label: &str, encrypted_phrase: &str) -> Result<MasterWallet, sqlx::Error> {
+    pub async fn create_wallet(
+        &self,
+        label: &str,
+        encrypted_phrase: &str,
+    ) -> Result<MasterWallet, sqlx::Error> {
         sqlx::query_as::<_, MasterWallet>(
-            "INSERT INTO master_wallets (label, encrypted_phrase) VALUES ($1, $2) RETURNING *"
+            "INSERT INTO master_wallets (label, encrypted_phrase) VALUES ($1, $2) RETURNING *",
         )
         .bind(label)
         .bind(encrypted_phrase)
@@ -54,7 +60,13 @@ impl DbClient {
             .await
     }
 
-    pub async fn save_address(&self, wallet_id: Uuid, network: &str, index: i32, address: &str) -> Result<DerivedAddress, sqlx::Error> {
+    pub async fn save_address(
+        &self,
+        wallet_id: Uuid,
+        network: &str,
+        index: i32,
+        address: &str,
+    ) -> Result<DerivedAddress, sqlx::Error> {
         sqlx::query_as::<_, DerivedAddress>(
             "INSERT INTO derived_addresses (wallet_id, network, address_index, address) 
              VALUES ($1, $2, $3, $4) 
@@ -67,5 +79,25 @@ impl DbClient {
         .bind(address)
         .fetch_one(&self.pool)
         .await
+    }
+    pub async fn log_audit_event(
+        &self,
+        action: &str,
+        wallet_id: Option<Uuid>,
+        status: &str,
+        ip_address: Option<String>,
+        details: Option<serde_json::Value>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO audit_logs (action, wallet_id, status, ip_address, details) VALUES ($1, $2, $3, $4, $5)"
+        )
+        .bind(action)
+        .bind(wallet_id)
+        .bind(status)
+        .bind(ip_address)
+        .bind(details)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 }

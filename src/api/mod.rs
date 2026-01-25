@@ -21,13 +21,13 @@ pub struct AppState {
     pub config: AppConfig, // Added config to state
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, ToSchema)]
 pub struct CreateWalletRequest {
     pub label: String,
     pub mnemonic_length: Option<usize>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema, IntoParams)]
 pub struct AddressQuery {
     pub index: u32,
 }
@@ -172,59 +172,7 @@ impl WalletService for MyWalletService {
     }
 }
 
-async fn sign_transaction(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<Uuid>,
-    Json(payload): Json<SignTxRequest>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
-    let wallet = state
-        .db
-        .get_wallet_by_id(id)
-        .await
-        .map_err(|e: sqlx::Error| {
-            tracing::warn!("Wallet not found: {} - {}", id, e);
-            (
-                axum::http::StatusCode::NOT_FOUND,
-                "Wallet not found".to_string(),
-            )
-        })?;
-
-    let network = match payload.network.as_str() {
-        "eth" => Network::Ethereum,
-        "tron" => Network::Tron,
-        "sol" => Network::Solana,
-        "ton" => Network::Ton,
-        _ => {
-            return Err((
-                axum::http::StatusCode::BAD_REQUEST,
-                "Unsupported network".to_string(),
-            ));
-        }
-    };
-
-    let signed_tx: String = state
-        .wallet_manager
-        .sign_tx(
-            &wallet.encrypted_phrase,
-            network,
-            payload.index,
-            &payload.unsigned_tx,
-        )
-        .await
-        .map_err(|e: anyhow::Error| {
-            tracing::error!("Signing failed: {}", e);
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal error".to_string(),
-            )
-        })?;
-
-    Ok(Json(serde_json::json!({
-        "signed_tx": signed_tx
-    })))
-}
-
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct SignTxRequest {
     pub network: String,
     pub index: u32,
@@ -235,21 +183,70 @@ use tower::ServiceBuilder;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
 
+use utoipa::{IntoParams, OpenApi, ToSchema};
+use utoipa_swagger_ui::SwaggerUi;
+
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        health_check,
+        create_wallet,
+        list_wallets,
+        get_address,
+        sign_transaction
+    ),
+    components(
+        schemas(CreateWalletRequest, SignTxRequest, crate::db::MasterWallet, crate::db::DerivedAddress)
+    ),
+    tags(
+        (name = "wallets", description = "Wallet management endpoints")
+    )
+)]
+pub struct ApiDoc;
+
+use axum_prometheus::PrometheusMetricLayer;
+use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
+
 pub fn create_router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let (prometheus_layer, metric_handle) = PrometheusMetricLayer::pair();
+
+    // Rate limit: 10 requests per second per IP
+    let governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(10)
+            .burst_size(5)
+            .finish()
+            .unwrap(),
+    );
+
+    let protected_routes = Router::new()
         .route("/api/v1/wallets", post(create_wallet).get(list_wallets))
         .route("/api/v1/wallets/:id/address/:network", get(get_address))
         .route("/api/v1/wallets/:id/sign", post(sign_transaction))
-        .route("/api/v1/health", get(health_check))
         .layer(
             ServiceBuilder::new()
-                .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-                .layer(PropagateRequestIdLayer::x_request_id())
-                .layer(TraceLayer::new_for_http())
                 .layer(middleware::from_fn_with_state(
                     state.clone(),
                     auth_middleware,
-                )),
+                ))
+                .layer(GovernorLayer {
+                    config: governor_conf,
+                }),
+        );
+
+    let public_routes = Router::new()
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
+        .route("/api/v1/health", get(health_check))
+        .route("/metrics", get(|| async move { metric_handle.render() }));
+
+    public_routes
+        .merge(protected_routes)
+        .layer(
+            ServiceBuilder::new()
+                .layer(prometheus_layer)
+                .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+                .layer(PropagateRequestIdLayer::x_request_id())
+                .layer(TraceLayer::new_for_http()),
         )
         .with_state(state)
 }
@@ -261,10 +258,11 @@ async fn auth_middleware(
     next: Next,
 ) -> Result<AxumResponse, StatusCode> {
     if let Some(required_key) = &state.config.server.api_key {
-        match headers.get("X-Api-Key") {
+        // Use lowercase for header lookup
+        match headers.get("x-api-key") {
             Some(key) if key == required_key => Ok(next.run(request).await),
             _ => {
-                tracing::warn!("Unauthorized access attempt");
+                tracing::warn!("Unauthorized access attempt. Headers: {:?}", headers);
                 Err(StatusCode::UNAUTHORIZED)
             }
         }
@@ -274,6 +272,14 @@ async fn auth_middleware(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/health",
+    responses(
+        (status = 200, description = "Service Healthy", body = serde_json::Value),
+        (status = 503, description = "Service Unhealthy")
+    )
+)]
 async fn health_check(State(state): State<Arc<AppState>>) -> (StatusCode, Json<serde_json::Value>) {
     let db_status = match state.db.get_wallets().await {
         Ok(_) => "ok",
@@ -304,6 +310,18 @@ async fn health_check(State(state): State<Arc<AppState>>) -> (StatusCode, Json<s
     )
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/wallets",
+    request_body = CreateWalletRequest,
+    responses(
+        (status = 200, description = "Wallet created", body = MasterWallet),
+        (status = 400, description = "Invalid input")
+    ),
+    security(
+        ("api_key" = [])
+    )
+)]
 async fn create_wallet(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<CreateWalletRequest>,
@@ -349,9 +367,32 @@ async fn create_wallet(
             )
         })?;
 
+    // Audit Log
+    let _ = state
+        .db
+        .log_audit_event(
+            "create_wallet",
+            Some(wallet.id),
+            "success",
+            None, // We could extract IP from request if needed, but for now None
+            Some(serde_json::json!({ "label": payload.label })),
+        )
+        .await
+        .map_err(|e| tracing::error!("Failed to write audit log: {}", e));
+
     Ok(Json(wallet))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/wallets",
+    responses(
+        (status = 200, description = "List all wallets", body = Vec<MasterWallet>)
+    ),
+    security(
+        ("api_key" = [])
+    )
+)]
 async fn list_wallets(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<crate::db::MasterWallet>>, (axum::http::StatusCode, String)> {
@@ -366,6 +407,22 @@ async fn list_wallets(
     Ok(Json(wallets))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/wallets/{id}/address/{network}",
+    params(
+        ("id" = Uuid, Path, description = "Wallet ID"),
+        ("network" = String, Path, description = "Network (eth, tron, sol, ton)"),
+        AddressQuery
+    ),
+    responses(
+        (status = 200, description = "Get address", body = serde_json::Value),
+        (status = 404, description = "Wallet not found")
+    ),
+    security(
+        ("api_key" = [])
+    )
+)]
 async fn get_address(
     State(state): State<Arc<AppState>>,
     Path((id, network_str)): Path<(Uuid, String)>,
@@ -426,5 +483,92 @@ async fn get_address(
         "network": network_str,
         "index": query.index,
         "address": address.to_string()
+    })))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/wallets/{id}/sign",
+    request_body = SignTxRequest,
+    params(
+        ("id" = Uuid, Path, description = "Wallet ID")
+    ),
+    responses(
+        (status = 200, description = "Sign transaction", body = serde_json::Value),
+        (status = 404, description = "Wallet not found")
+    ),
+    security(
+        ("api_key" = [])
+    )
+)]
+async fn sign_transaction(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<SignTxRequest>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let wallet = state
+        .db
+        .get_wallet_by_id(id)
+        .await
+        .map_err(|e: sqlx::Error| {
+            tracing::warn!("Wallet not found: {} - {}", id, e);
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                "Wallet not found".to_string(),
+            )
+        })?;
+
+    let network = match payload.network.as_str() {
+        "eth" => Network::Ethereum,
+        "tron" => Network::Tron,
+        "sol" => Network::Solana,
+        "ton" => Network::Ton,
+        _ => {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                "Unsupported network".to_string(),
+            ));
+        }
+    };
+
+    let signed_tx: String = state
+        .wallet_manager
+        .sign_tx(
+            &wallet.encrypted_phrase,
+            network,
+            payload.index,
+            &payload.unsigned_tx,
+        )
+        .await
+        .map_err(|e: anyhow::Error| {
+            tracing::error!("Signing failed: {}", e);
+            let _ = state.db.log_audit_event(
+                "sign_transaction",
+                Some(id),
+                "failed",
+                None,
+                Some(serde_json::json!({ "error": e.to_string() })),
+            );
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal error".to_string(),
+            )
+        })?;
+
+    // Audit Log Success
+    let _ = state
+        .db
+        .log_audit_event(
+            "sign_transaction",
+            Some(id),
+            "success",
+            None,
+            Some(serde_json::json!({ "network": payload.network, "index": payload.index })),
+        )
+        .await
+        .map_err(|e| tracing::error!("Failed to write audit log: {}", e));
+
+    Ok(Json(serde_json::json!({
+        "signed_tx": signed_tx
     })))
 }

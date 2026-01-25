@@ -1,3 +1,4 @@
+use axum::extract::ConnectInfo;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -6,12 +7,19 @@ use crypto_wallets_service::{api, config, core, db, vault};
 use reqwest;
 use serde_json::Value;
 use sqlx::postgres::PgPoolOptions;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceExt; // for oneshot // Added for reqwest::Client
+use tracing_subscriber;
 
 #[tokio::test]
 async fn full_integration_test() {
-    use testcontainers::{GenericImage, ImageExt, core::WaitFor, runners::AsyncRunner};
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_test_writer()
+        .try_init();
+
+    use testcontainers::{GenericImage, ImageExt, runners::AsyncRunner};
     use testcontainers_modules::postgres::Postgres;
 
     // 1. Start Containers
@@ -34,7 +42,7 @@ async fn full_integration_test() {
     // Create image and set properties. Order matters for types in earlier versions/wrappers.
     // GenericImage implements Image.
     let vault_image = GenericImage::new("hashicorp/vault", "latest")
-        .with_wait_for(WaitFor::message_on_stderr("Vault server started!"))
+        // .with_wait_for(WaitFor::message_on_stderr("Vault server started!")) // Rely on manual poll
         .with_env_var("VAULT_DEV_ROOT_TOKEN_ID", "root")
         .with_env_var("VAULT_DEV_LISTEN_ADDRESS", "0.0.0.0:8200");
 
@@ -141,6 +149,7 @@ async fn full_integration_test() {
         .oneshot(
             Request::builder()
                 .uri("/api/v1/health")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1234))))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -162,6 +171,7 @@ async fn full_integration_test() {
                 .method("POST")
                 .uri("/api/v1/wallets")
                 .header("Content-Type", "application/json")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1234))))
                 .body(Body::from(r#"{"label": "test-wallet"}"#))
                 .unwrap(),
         )
@@ -178,6 +188,7 @@ async fn full_integration_test() {
                 .uri("/api/v1/wallets")
                 .header("Content-Type", "application/json")
                 .header("X-Api-Key", "test-secret-key")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1234))))
                 .body(Body::from(r#"{"label": "test-wallet"}"#))
                 .unwrap(),
         )
@@ -199,6 +210,7 @@ async fn full_integration_test() {
             Request::builder()
                 .uri(format!("/api/v1/wallets/{}/address/eth?index=0", wallet_id))
                 .header("X-Api-Key", "test-secret-key")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1234))))
                 .body(Body::empty())
                 .unwrap(),
         )
