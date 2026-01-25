@@ -31,9 +31,12 @@ services:
     image: hashicorp/vault:1.21.2
     environment:
       - VAULT_DEV_ROOT_TOKEN_ID=root
-      - VAULT_ADDR=http://0.0.0.0:8200
+      - VAULT_ADDR=http://127.0.0.1:8200
+      - VAULT_TOKEN=root
     ports:
       - "8200:8200"
     cap_add:
       - IPC_LOCK
-    entrypoint: vault server -dev -dev-root-token-id=root -dev-listen-address=0.0.0.0:8200
+    volumes:
+      - ./docker/vault-init.sh:/usr/local/bin/vault-init.sh
+    entrypoint: /usr/local/bin/vault-init.sh

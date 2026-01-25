@@ -37,21 +37,32 @@ A high-performance, secure microservice for generating, storing, and signing cry
 
 1.  **Start Infrastructure**:
     ```bash
-    docker-compose up -d
+    make up
     ```
-    This starts Postgres (5432) and Vault (8200).
+    This starts Postgres (5432) and a self-configuring Vault (8200). 
+    *Note: Vault is automatically initialized with the transit engine and master key via `docker/vault-init.sh`.*
 
-2.  **Initialize Vault**:
-    The service expects Vault to have the Transit engine enabled at `transit/`.
-    *(Note: The provided `docker-compose` sets up a dev vault with root token `root`. In integration tests, this is automated.)*
-
-3.  **Run the Service**:
+2.  **Run the Service**:
     ```bash
-    cargo run
+    make run
     ```
-    The server listens on `0.0.0.0:3000`.
+    The server listens on `0.0.0.0:3000` (HTTP) and `0.0.0.0:3001` (gRPC).
 
-### Configuration
+### Makefile Commands
+
+| Command | Description |
+| :--- | :--- |
+| `make up` | Start infrastructure (Postgres, Vault) |
+| `make down` | Stop infrastructure |
+| `make test-int` | Run integration tests |
+| `make lint` | Run clippy |
+| `make fmt` | Format code |
+
+## 📖 API Documentation
+
+*   **Swagger UI**: Open `http://localhost:3000/swagger-ui` in your browser.
+*   **gRPC Proto**: Definitions available in `proto/wallet.proto`.
+*   **Postman**: Import `postman_collection.json` for manual testing.
 
 Configuration is handled via `config/default.toml` or Environment Variables.
 
@@ -92,6 +103,20 @@ Configuration is handled via `config/default.toml` or Environment Variables.
     ```
 
 ## 📦 Deployment
+
+### GitLab CI/CD
+
+The project includes a `.gitlab-ci.yml` file for automated linting, testing, and building. 
+
+**Required GitLab Variables:**
+- `CI_REGISTRY_USER`: Your GitLab Container Registry username (usually provided by GitLab).
+- `CI_REGISTRY_PASSWORD`: Your GitLab Container Registry password/token (usually provided by GitLab).
+- `CI_REGISTRY`: The address of the registry (usually provided by GitLab).
+
+**Note on Runners:**
+The CI/CD pipeline is configured to use runners with the `docker` tag. Ensure your GitLab runners have this tag enabled.
+
+To enable automatic pushing of images, uncomment the `docker login` and `docker push` lines in `.gitlab-ci.yml`.
 
 ### Docker
 
