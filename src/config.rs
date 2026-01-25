@@ -1,9 +1,10 @@
+use config::{Config, ConfigError, Environment, File};
 use serde::Deserialize;
-use config::{Config, ConfigError, File, Environment};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ServerConfig {
     pub port: u16,
+    pub api_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

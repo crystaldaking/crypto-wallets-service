@@ -1,17 +1,17 @@
-mod config;
 mod api;
+mod config;
 mod core;
 mod db;
 mod vault;
 
-use std::sync::Arc;
-use sqlx::postgres::PgPoolOptions;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use crate::config::AppConfig;
 use crate::api::{AppState, create_router};
+use crate::config::AppConfig;
+use crate::core::WalletManager;
 use crate::db::DbClient;
 use crate::vault::VaultClient;
-use crate::core::WalletManager;
+use sqlx::postgres::PgPoolOptions;
+use std::sync::Arc;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -33,9 +33,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // Run migrations
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await?;
+    sqlx::migrate!("./migrations").run(&pool).await?;
 
     let db_client = DbClient::new(pool);
     let vault_client = VaultClient::new(
@@ -49,27 +47,31 @@ async fn main() -> anyhow::Result<()> {
         db: db_client,
         vault: vault_client,
         wallet_manager,
+        config: config.clone(),
     });
 
     // Build router
     let app = create_router(state.clone());
 
     // gRPC server
-    let grpc_service = crate::api::MyWalletService { state: state.clone() };
+    let grpc_service = crate::api::MyWalletService {
+        state: state.clone(),
+    };
     let grpc_addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.server.port + 1));
     tracing::info!("gRPC Server listening on {}", grpc_addr);
 
     let grpc_server = tonic::transport::Server::builder()
-        .add_service(crate::api::grpc::wallet_service_server::WalletServiceServer::new(grpc_service))
+        .add_service(
+            crate::api::grpc::wallet_service_server::WalletServiceServer::new(grpc_service),
+        )
         .serve_with_shutdown(grpc_addr, shutdown_signal());
 
     // HTTP server
     let http_addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.server.port));
     tracing::info!("HTTP Server listening on {}", http_addr);
-    
+
     let listener = tokio::net::TcpListener::bind(http_addr).await?;
-    let http_server = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal());
+    let http_server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
 
     // Run both
     tokio::select! {
