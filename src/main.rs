@@ -1,14 +1,8 @@
-mod api;
-mod config;
-mod core;
-mod db;
-mod vault;
-
-use crate::api::{AppState, create_router};
-use crate::config::AppConfig;
-use crate::core::WalletManager;
-use crate::db::DbClient;
-use crate::vault::VaultClient;
+use crypto_wallets_service::api::{AppState, create_router};
+use crypto_wallets_service::config::AppConfig;
+use crypto_wallets_service::core::WalletManager;
+use crypto_wallets_service::db::DbClient;
+use crypto_wallets_service::vault::VaultClient;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -54,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
     let app = create_router(state.clone());
 
     // gRPC server
-    let grpc_service = crate::api::MyWalletService {
+    let grpc_service = crypto_wallets_service::api::MyWalletService {
         state: state.clone(),
     };
     let grpc_addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.server.port + 1));
@@ -62,7 +56,9 @@ async fn main() -> anyhow::Result<()> {
 
     let grpc_server = tonic::transport::Server::builder()
         .add_service(
-            crate::api::grpc::wallet_service_server::WalletServiceServer::new(grpc_service),
+            crypto_wallets_service::api::grpc::wallet_service_server::WalletServiceServer::new(
+                grpc_service,
+            ),
         )
         .serve_with_shutdown(grpc_addr, shutdown_signal());
 

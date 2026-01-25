@@ -231,16 +231,26 @@ pub struct SignTxRequest {
     pub unsigned_tx: String,
 }
 
+use tower::ServiceBuilder;
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
+use tower_http::trace::TraceLayer;
+
 pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/v1/wallets", post(create_wallet).get(list_wallets))
         .route("/api/v1/wallets/:id/address/:network", get(get_address))
         .route("/api/v1/wallets/:id/sign", post(sign_transaction))
-        .route("/api/v1/health", get(health_check)) // Health check might not need auth, but let's secure everything for now
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth_middleware,
-        ))
+        .route("/api/v1/health", get(health_check))
+        .layer(
+            ServiceBuilder::new()
+                .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+                .layer(PropagateRequestIdLayer::x_request_id())
+                .layer(TraceLayer::new_for_http())
+                .layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    auth_middleware,
+                )),
+        )
         .with_state(state)
 }
 
