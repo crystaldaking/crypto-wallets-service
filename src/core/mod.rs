@@ -180,13 +180,15 @@ impl WalletManager {
         let xpriv = XPriv::root_from_seed(&seed, None)?;
         let derived_xpriv = xpriv.derive_path(&path)?;
 
+        // Validate transaction format before signing
+        let tx_bytes = validate_transaction_format(network, unsigned_tx)?;
+
         match network {
             Network::Ethereum | Network::Tron => {
                 let signing_key: &SigningKey = derived_xpriv.as_ref();
                 let signer = PrivateKeySigner::from_bytes(&B256::from_slice(
                     signing_key.to_bytes().as_ref(),
                 ))?;
-                let tx_bytes = hex::decode(unsigned_tx.trim_start_matches("0x"))?;
                 let signature = signer.sign_message(&tx_bytes).await?;
                 Ok(format!("0x{}", hex::encode(signature.as_bytes())))
             }
@@ -195,12 +197,85 @@ impl WalletManager {
                 let seed_32: [u8; 32] =
                     <[u8; 32]>::try_from(signing_key_bip32.to_bytes().as_ref())?;
                 let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed_32);
-                let tx_bytes = hex::decode(unsigned_tx.trim_start_matches("0x"))?;
                 let signature = ed25519_dalek::Signer::sign(&signing_key, &tx_bytes);
                 Ok(hex::encode(signature.to_bytes()))
             }
         }
     }
+}
+
+/// Validates transaction format for the given network
+/// Returns decoded bytes or an error if format is invalid
+fn validate_transaction_format(network: Network, unsigned_tx: &str) -> anyhow::Result<Vec<u8>> {
+    // Remove optional 0x prefix
+    let hex_str = unsigned_tx.trim_start_matches("0x");
+    
+    // Basic hex validation
+    if hex_str.is_empty() {
+        anyhow::bail!("Transaction data is empty");
+    }
+    if hex_str.len() % 2 != 0 {
+        anyhow::bail!("Invalid hex string: odd length");
+    }
+    if !hex_str.chars().all(|c| c.is_ascii_hexdigit()) {
+        anyhow::bail!("Invalid hex string: contains non-hex characters");
+    }
+    
+    let bytes = hex::decode(hex_str)?;
+    
+    // Network-specific validation
+    match network {
+        Network::Ethereum => {
+            // Ethereum transaction should be at least:
+            // - Legacy: nonce (1+) + gasPrice (1+) + gasLimit (1+) + to (20) + value (1+) + data (0+) + v (1+) + r (32) + s (32)
+            // - EIP-1559: type (0x02) + rlp encoded fields
+            if bytes.is_empty() {
+                anyhow::bail!("Ethereum transaction is empty");
+            }
+            // Check for valid transaction type prefix (EIP-2718)
+            // Typed transactions start with 0x01, 0x02, etc. (values 0x00-0x7f)
+            // Legacy transactions start with RLP list prefix (0xc0 and above)
+            let first_byte = bytes[0];
+            if first_byte < 0x7f && first_byte != 0 {
+                // Typed transaction (EIP-2718)
+                match first_byte {
+                    0x01 => { /* EIP-2930 */ }
+                    0x02 => { /* EIP-1559 */ }
+                    _ => anyhow::bail!("Unknown Ethereum transaction type: 0x{:02x}", first_byte),
+                }
+            } else {
+                // Legacy transaction - must be valid RLP
+                // RLP list prefix for small lists (0xc0-0xf7) or large lists (0xf8+)
+                // Minimum legacy tx: ~45 bytes for a simple transfer
+                if bytes.len() < 45 {
+                    anyhow::bail!("Legacy Ethereum transaction too short");
+                }
+            }
+        }
+        Network::Tron => {
+            // Tron uses protobuf-encoded transactions
+            // At minimum should have some protobuf structure
+            if bytes.len() < 10 {
+                anyhow::bail!("Tron transaction too short for protobuf");
+            }
+        }
+        Network::Solana => {
+            // Solana transaction is a serialized Message or VersionedTransaction
+            // Minimum size is around 128 bytes for a simple transfer
+            if bytes.len() < 64 {
+                anyhow::bail!("Solana transaction too short (minimum ~64 bytes)");
+            }
+        }
+        Network::Ton => {
+            // TON transactions are typically base64-encoded cells
+            // But since we accept hex, we just check reasonable bounds
+            if bytes.len() < 10 {
+                anyhow::bail!("TON transaction too short");
+            }
+        }
+    }
+    
+    Ok(bytes)
 }
 
 #[cfg(test)]
