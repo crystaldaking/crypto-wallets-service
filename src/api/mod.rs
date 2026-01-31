@@ -338,6 +338,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> (StatusCode, Json<s
 )]
 async fn create_wallet(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<CreateWalletRequest>,
 ) -> Result<Json<crate::db::MasterWallet>, (axum::http::StatusCode, String)> {
     tracing::info!("Received create_wallet request: label={}", payload.label);
@@ -388,13 +389,23 @@ async fn create_wallet(
 
     // Audit Log
     tracing::info!("Wallet saved. Logging audit event...");
+    let ip_address = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|v| v.to_str().ok())
+        })
+        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
+    
     let _ = state
         .db
         .log_audit_event(
             "create_wallet",
             Some(wallet.id),
             "success",
-            None, // We could extract IP from request if needed, but for now None
+            ip_address,
             Some(serde_json::json!({ "label": payload.label })),
         )
         .await
@@ -524,6 +535,7 @@ async fn get_address(
 )]
 async fn sign_transaction(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(payload): Json<SignTxRequest>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
@@ -552,6 +564,17 @@ async fn sign_transaction(
         }
     };
 
+    // Extract IP address for audit logging
+    let ip_address = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|v| v.to_str().ok())
+        })
+        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
+
     let signed_tx: String = state
         .wallet_manager
         .sign_tx(
@@ -567,7 +590,7 @@ async fn sign_transaction(
                 "sign_transaction",
                 Some(id),
                 "failed",
-                None,
+                ip_address.clone(),
                 Some(serde_json::json!({ "error": e.to_string() })),
             );
             (
@@ -583,7 +606,7 @@ async fn sign_transaction(
             "sign_transaction",
             Some(id),
             "success",
-            None,
+            ip_address,
             Some(serde_json::json!({ "network": payload.network, "index": payload.index })),
         )
         .await
