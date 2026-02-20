@@ -179,6 +179,24 @@ pub struct SignTxRequest {
     pub unsigned_tx: String,
 }
 
+/// Response structure for wallet endpoints - excludes sensitive data
+#[derive(Serialize, ToSchema)]
+pub struct WalletResponse {
+    pub id: Uuid,
+    pub label: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<crate::db::MasterWallet> for WalletResponse {
+    fn from(wallet: crate::db::MasterWallet) -> Self {
+        Self {
+            id: wallet.id,
+            label: wallet.label,
+            created_at: wallet.created_at,
+        }
+    }
+}
+
 use tower::ServiceBuilder;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
@@ -196,7 +214,7 @@ use utoipa_swagger_ui::SwaggerUi;
         sign_transaction
     ),
     components(
-        schemas(CreateWalletRequest, SignTxRequest, crate::db::MasterWallet, crate::db::DerivedAddress)
+        schemas(CreateWalletRequest, SignTxRequest, WalletResponse, crate::db::DerivedAddress)
     ),
     tags(
         (name = "wallets", description = "Wallet management endpoints")
@@ -329,7 +347,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> (StatusCode, Json<s
     path = "/api/v1/wallets",
     request_body = CreateWalletRequest,
     responses(
-        (status = 200, description = "Wallet created", body = MasterWallet),
+        (status = 200, description = "Wallet created", body = WalletResponse),
         (status = 400, description = "Invalid input")
     ),
     security(
@@ -340,7 +358,7 @@ async fn create_wallet(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<CreateWalletRequest>,
-) -> Result<Json<crate::db::MasterWallet>, (axum::http::StatusCode, String)> {
+) -> Result<Json<WalletResponse>, (axum::http::StatusCode, String)> {
     tracing::info!("Received create_wallet request: label={}", payload.label);
 
     let length = payload.mnemonic_length.unwrap_or(12);
@@ -412,14 +430,14 @@ async fn create_wallet(
         .map_err(|e| tracing::error!("Failed to write audit log: {}", e));
 
     tracing::info!("create_wallet completed successfully");
-    Ok(Json(wallet))
+    Ok(Json(WalletResponse::from(wallet)))
 }
 
 #[utoipa::path(
     get,
     path = "/api/v1/wallets",
     responses(
-        (status = 200, description = "List all wallets", body = Vec<MasterWallet>)
+        (status = 200, description = "List all wallets", body = Vec<WalletResponse>)
     ),
     security(
         ("api_key" = [])
@@ -427,7 +445,7 @@ async fn create_wallet(
 )]
 async fn list_wallets(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<crate::db::MasterWallet>>, (axum::http::StatusCode, String)> {
+) -> Result<Json<Vec<WalletResponse>>, (axum::http::StatusCode, String)> {
     let wallets: Vec<crate::db::MasterWallet> =
         state.db.get_wallets().await.map_err(|e: sqlx::Error| {
             tracing::error!("Database error: {}", e);
@@ -436,7 +454,8 @@ async fn list_wallets(
                 "Internal error".to_string(),
             )
         })?;
-    Ok(Json(wallets))
+    let response: Vec<WalletResponse> = wallets.into_iter().map(WalletResponse::from).collect();
+    Ok(Json(response))
 }
 
 #[utoipa::path(

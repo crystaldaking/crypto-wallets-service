@@ -9,7 +9,9 @@ use utoipa::ToSchema;
 pub struct MasterWallet {
     pub id: Uuid,
     pub label: String,
-    pub encrypted_phrase: String, // Note: usually we might not want to show this in docs/response? But it's in the struct.
+    /// Encrypted mnemonic phrase - never serialized to API responses
+    #[serde(skip_serializing)]
+    pub encrypted_phrase: String,
     pub created_at: DateTime<Utc>,
 }
 
