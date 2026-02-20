@@ -55,10 +55,16 @@ async fn main() -> anyhow::Result<()> {
     let grpc_addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.server.port + 1));
     tracing::info!("gRPC Server listening on {}", grpc_addr);
 
+    // Create interceptor for auth
+    let auth_interceptor = crypto_wallets_service::api::check_auth_interceptor(
+        state.config.server.api_key.clone(),
+    );
+
     let grpc_server = tonic::transport::Server::builder()
         .add_service(
-            crypto_wallets_service::api::grpc::wallet_service_server::WalletServiceServer::new(
+            crypto_wallets_service::api::grpc::wallet_service_server::WalletServiceServer::with_interceptor(
                 grpc_service,
+                auth_interceptor,
             ),
         )
         .serve_with_shutdown(grpc_addr, shutdown_signal());
