@@ -1,5 +1,6 @@
 use config::{Config, ConfigError, Environment, File};
 use serde::Deserialize;
+use std::fmt;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct RateLimitConfig {
@@ -8,7 +9,7 @@ pub struct RateLimitConfig {
     pub burst_size: u32,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Deserialize, Clone)]
 pub struct ServerConfig {
     pub port: u16,
     pub api_key: Option<String>,
@@ -19,7 +20,18 @@ pub struct ServerConfig {
     pub trusted_proxies: Vec<ipnet::IpNet>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+impl fmt::Debug for ServerConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServerConfig")
+            .field("port", &self.port)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("rate_limit", &self.rate_limit)
+            .field("trusted_proxies", &self.trusted_proxies)
+            .finish()
+    }
+}
+
+#[derive(Deserialize, Clone)]
 pub struct DatabaseConfig {
     pub url: String,
     /// Maximum number of connections in the pool
@@ -29,15 +41,34 @@ pub struct DatabaseConfig {
     pub pool_size: u32,
 }
 
+impl fmt::Debug for DatabaseConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DatabaseConfig")
+            .field("url", &"[REDACTED]")
+            .field("pool_size", &self.pool_size)
+            .finish()
+    }
+}
+
 fn default_pool_size() -> u32 {
     20
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Deserialize, Clone)]
 pub struct VaultConfig {
     pub address: String,
     pub token: String,
     pub key_id: String,
+}
+
+impl fmt::Debug for VaultConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VaultConfig")
+            .field("address", &self.address)
+            .field("token", &"[REDACTED]")
+            .field("key_id", &self.key_id)
+            .finish()
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
