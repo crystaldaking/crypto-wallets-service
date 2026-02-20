@@ -371,7 +371,8 @@ async fn auth_middleware(
     )
 )]
 async fn health_check(State(state): State<Arc<AppState>>) -> (StatusCode, Json<serde_json::Value>) {
-    let db_status = match state.db.get_wallets().await {
+    // Use lightweight SELECT 1 instead of fetching all wallets
+    let db_status = match state.db.health_check().await {
         Ok(_) => "ok",
         Err(_) => "error",
     };

@@ -90,6 +90,11 @@ impl DbClient {
             .await
     }
 
+    /// Lightweight health check query
+    pub async fn health_check(&self) -> Result<(), sqlx::Error> {
+        sqlx::query("SELECT 1").fetch_one(&self.pool).await.map(|_| ())
+    }
+
     pub async fn get_wallet_by_id(&self, id: Uuid) -> Result<MasterWallet, sqlx::Error> {
         sqlx::query_as::<_, MasterWallet>("SELECT * FROM master_wallets WHERE id = $1")
             .bind(id)
