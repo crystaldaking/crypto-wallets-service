@@ -43,6 +43,7 @@ anyhow = "1.0"
 rand = "0.8"
 sha2 = "0.10.9"
 crc16 = "0.4.0"
+subtle = "2.6"
 tonlib-core = "0.26"
 ipnet = { version = "2.9", features = ["serde"] }
 

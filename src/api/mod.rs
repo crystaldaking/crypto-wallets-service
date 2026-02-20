@@ -3,6 +3,7 @@ use crate::config::AppConfig;
 use crate::core::{Address, Network, WalletManager};
 use crate::db::DbClient;
 use crate::vault::VaultClient;
+use subtle::ConstantTimeEq;
 use axum::{
     Json, Router,
     extract::{Path, Query, Request, State},
@@ -293,7 +294,10 @@ async fn auth_middleware(
         // Use lowercase for header lookup
         match headers.get("x-api-key") {
             Some(key) => {
-                if key == required_key {
+                // Constant-time comparison to prevent timing attacks
+                let key_bytes = key.as_bytes();
+                let required_bytes = required_key.as_bytes();
+                if key_bytes.ct_eq(required_bytes).into() {
                     tracing::info!("Auth middleware: Key matched");
                     Ok(next.run(request).await)
                 } else {
