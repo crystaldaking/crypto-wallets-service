@@ -45,6 +45,35 @@ use grpc::{
 };
 use tonic::{Request as TonicRequest, Response as TonicResponse, Status};
 
+/// gRPC interceptor for API key authentication
+pub fn check_auth_interceptor(
+    api_key: Option<String>,
+) -> impl Fn(TonicRequest<()>) -> Result<TonicRequest<()>, Status> + Clone + Send + 'static {
+    move |req: TonicRequest<()>| {
+        if let Some(ref required_key) = api_key {
+            match req.metadata().get("x-api-key") {
+                Some(key) => {
+                    if let Ok(key_str) = key.to_str() {
+                        // Use constant-time comparison to prevent timing attacks
+                        if key_str.as_bytes().ct_eq(required_key.as_bytes()).into() {
+                            return Ok(req);
+                        }
+                    }
+                    tracing::warn!("gRPC: Unauthorized access attempt. Invalid Key.");
+                    Err(Status::unauthenticated("Invalid API key"))
+                }
+                None => {
+                    tracing::warn!("gRPC: Unauthorized access attempt. Missing Key.");
+                    Err(Status::unauthenticated("Missing API key"))
+                }
+            }
+        } else {
+            // No API key configured, allow access
+            Ok(req)
+        }
+    }
+}
+
 pub struct MyWalletService {
     pub state: Arc<AppState>,
 }
