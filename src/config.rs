@@ -13,6 +13,10 @@ pub struct ServerConfig {
     pub port: u16,
     pub api_key: Option<String>,
     pub rate_limit: RateLimitConfig,
+    /// List of trusted proxy CIDRs (e.g., ["10.0.0.0/8", "127.0.0.1"])
+    /// When empty, falls back to X-Real-Ip or direct connection
+    #[serde(default)]
+    pub trusted_proxies: Vec<ipnet::IpNet>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

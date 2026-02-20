@@ -105,6 +105,7 @@ async fn full_integration_test() {
                 requests_per_second: 10,
                 burst_size: 5,
             },
+            trusted_proxies: vec![],
         },
         database: config::DatabaseConfig {
             url: db_url.clone(),

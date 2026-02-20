@@ -43,6 +43,7 @@ anyhow = "1.0"
 rand = "0.8"
 sha2 = "0.10.9"
 crc16 = "0.4.0"
+ipnet = { version = "2.9", features = ["serde"] }
 
 # Advanced Features
 utoipa = { version = "4.2", features = ["axum_extras", "uuid"] }
