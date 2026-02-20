@@ -12,6 +12,9 @@ pub struct RateLimitConfig {
 #[derive(Deserialize, Clone)]
 pub struct ServerConfig {
     pub port: u16,
+    /// gRPC server port. Defaults to port + 1 if not specified.
+    #[serde(default)]
+    pub grpc_port: Option<u16>,
     pub api_key: Option<String>,
     pub rate_limit: RateLimitConfig,
     /// List of trusted proxy CIDRs (e.g., ["10.0.0.0/8", "127.0.0.1"])
@@ -20,10 +23,18 @@ pub struct ServerConfig {
     pub trusted_proxies: Vec<ipnet::IpNet>,
 }
 
+impl ServerConfig {
+    /// Get the gRPC port, defaulting to HTTP port + 1
+    pub fn grpc_port(&self) -> u16 {
+        self.grpc_port.unwrap_or(self.port + 1)
+    }
+}
+
 impl fmt::Debug for ServerConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ServerConfig")
             .field("port", &self.port)
+            .field("grpc_port", &self.grpc_port())
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
             .field("rate_limit", &self.rate_limit)
             .field("trusted_proxies", &self.trusted_proxies)
