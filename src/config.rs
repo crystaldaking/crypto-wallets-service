@@ -22,6 +22,15 @@ pub struct ServerConfig {
 #[derive(Debug, Deserialize, Clone)]
 pub struct DatabaseConfig {
     pub url: String,
+    /// Maximum number of connections in the pool
+    /// Default: 20 (suitable for production workloads)
+    /// For high-load systems, consider 50+ connections
+    #[serde(default = "default_pool_size")]
+    pub pool_size: u32,
+}
+
+fn default_pool_size() -> u32 {
+    20
 }
 
 #[derive(Debug, Deserialize, Clone)]

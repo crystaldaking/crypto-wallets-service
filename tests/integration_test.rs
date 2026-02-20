@@ -109,6 +109,7 @@ async fn full_integration_test() {
         },
         database: config::DatabaseConfig {
             url: db_url.clone(),
+            pool_size: 5, // Smaller pool for tests
         },
         vault: config::VaultConfig {
             address: vault_addr.clone(),

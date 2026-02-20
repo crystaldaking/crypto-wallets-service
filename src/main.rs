@@ -20,11 +20,12 @@ async fn main() -> anyhow::Result<()> {
     // Load config
     let config = AppConfig::build().expect("Failed to load configuration");
 
-    // Connect to DB
+    // Connect to DB with configurable pool size
     let pool = PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(config.database.pool_size)
         .connect(&config.database.url)
         .await?;
+    tracing::info!("Database pool initialized with {} connections", config.database.pool_size);
 
     // Run migrations
     sqlx::migrate!("./migrations").run(&pool).await?;
