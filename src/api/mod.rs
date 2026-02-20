@@ -1,3 +1,4 @@
+use crate::auth::extract_client_ip;
 use crate::config::AppConfig;
 use crate::core::{Address, Network, WalletManager};
 use crate::db::DbClient;
@@ -407,15 +408,7 @@ async fn create_wallet(
 
     // Audit Log
     tracing::info!("Wallet saved. Logging audit event...");
-    let ip_address = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|v| v.to_str().ok())
-        })
-        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
+    let ip_address = extract_client_ip(&headers, &state.config.server.trusted_proxies);
     
     let _ = state
         .db
@@ -584,15 +577,7 @@ async fn sign_transaction(
     };
 
     // Extract IP address for audit logging
-    let ip_address = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|v| v.to_str().ok())
-        })
-        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
+    let ip_address = extract_client_ip(&headers, &state.config.server.trusted_proxies);
 
     let signed_tx: String = state
         .wallet_manager
