@@ -55,7 +55,15 @@ impl WalletService for MyWalletService {
         request: TonicRequest<GrpcCreateWalletRequest>,
     ) -> Result<TonicResponse<WalletInfo>, Status> {
         let req = request.into_inner();
-        let length = 12; // Default
+        
+        // Validate mnemonic length (same as HTTP endpoint)
+        let length = req.mnemonic_length.unwrap_or(12) as usize;
+        if length != 12 && length != 24 {
+            return Err(Status::invalid_argument(
+                "Mnemonic length must be 12 or 24",
+            ));
+        }
+        
         let mnemonic = WalletManager::generate_mnemonic(length).map_err(|e| {
             tracing::error!("Failed to generate mnemonic: {}", e);
             Status::internal("Internal error")
