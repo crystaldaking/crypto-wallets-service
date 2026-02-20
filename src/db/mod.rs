@@ -1,11 +1,12 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Postgres};
+use std::fmt;
 use uuid::Uuid;
 
 use utoipa::ToSchema;
 
-#[derive(Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
+#[derive(Serialize, Deserialize, sqlx::FromRow, ToSchema)]
 pub struct MasterWallet {
     pub id: Uuid,
     pub label: String,
@@ -13,6 +14,17 @@ pub struct MasterWallet {
     #[serde(skip_serializing)]
     pub encrypted_phrase: String,
     pub created_at: DateTime<Utc>,
+}
+
+impl fmt::Debug for MasterWallet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MasterWallet")
+            .field("id", &self.id)
+            .field("label", &self.label)
+            .field("encrypted_phrase", &"[REDACTED]")
+            .field("created_at", &self.created_at)
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
