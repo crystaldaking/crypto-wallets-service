@@ -155,23 +155,9 @@ impl WalletManager {
                 let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed_32);
                 let public_key = signing_key.verifying_key();
 
-                // TON Wallet v4r2 (standard) construction usually requires state init.
-                use sha2::{Digest, Sha256};
-                let account_id = Sha256::digest(public_key.as_bytes()); // Approximation!
-
-                let mut data = Vec::with_capacity(36);
-                data.push(0x11); // Tag: bounceable
-                data.push(0x00); // Workchain: 0
-                data.extend_from_slice(&account_id);
-
-                // CRC16-CCITT (XMODEM)
-                let crc = crc16::State::<crc16::XMODEM>::calculate(&data);
-                data.extend_from_slice(&crc.to_be_bytes());
-
-                use base64::Engine;
-                Ok(Address::new(
-                    base64::engine::general_purpose::URL_SAFE.encode(data),
-                ))
+                // Use tonlib-core for proper TON Wallet V4R2 address derivation
+                let wallet = Self::derive_ton_wallet_v4r2(public_key.as_bytes())?;
+                Ok(Address::new(wallet.address.to_base64_url()))
             }
         }
     }
@@ -215,6 +201,25 @@ impl WalletManager {
                 Ok(hex::encode(signature.to_bytes()))
             }
         }
+    }
+
+    /// Derives TON Wallet V4R2 address from public key using tonlib-core
+    fn derive_ton_wallet_v4r2(public_key: &[u8; 32]) -> anyhow::Result<tonlib_core::wallet::ton_wallet::TonWallet> {
+        use tonlib_core::wallet::mnemonic::KeyPair;
+        use tonlib_core::wallet::ton_wallet::TonWallet;
+        use tonlib_core::wallet::wallet_version::WalletVersion;
+        
+        // Create a KeyPair with the public key
+        // KeyPair is a struct with public_key and secret_key fields (Vec<u8>)
+        let key_pair = KeyPair {
+            public_key: public_key.to_vec(),
+            secret_key: vec![0u8; 64], // dummy secret key - not used for address calculation
+        };
+        
+        // Derive wallet using default parameters (workchain 0, standard wallet_id)
+        let wallet = TonWallet::new(WalletVersion::V4R2, key_pair)
+            .map_err(|e| anyhow::anyhow!("Failed to derive TON wallet: {:?}", e))?;
+        Ok(wallet)
     }
 }
 
@@ -353,18 +358,23 @@ mod tests {
 
         // 3. TON
         // Path: m/44'/607'/0'/0/0
-        // Should be Base64Url encoded.
+        // Should be Base64Url encoded with proper Wallet V4R2 address
         let ton_addr =
             WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ton, 0).unwrap();
         println!("Ton: {}", ton_addr);
+        
+        // Verify TON address format (bounceable, workchain 0)
+        // EQ prefix indicates bounceable workchain 0 address
+        assert!(ton_addr.to_string().starts_with("EQ"), "TON bounceable address should start with EQ");
+        
         // Should validly decode as Base64Url
         use base64::Engine;
         let decoded_ton = base64::engine::general_purpose::URL_SAFE
             .decode(ton_addr.to_string())
-            .unwrap();
+        .unwrap();
         assert_eq!(decoded_ton.len(), 36); // 1 flags + 1 workchain + 32 hash + 2 crc
-        assert_eq!(decoded_ton[0], 0x11);
-        assert_eq!(decoded_ton[1], 0x00);
+        assert_eq!(decoded_ton[0], 0x11); // bounceable flag
+        assert_eq!(decoded_ton[1], 0x00); // workchain 0
     }
 
     #[test]
