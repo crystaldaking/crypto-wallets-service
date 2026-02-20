@@ -18,7 +18,9 @@ RUN cargo build --release
 FROM gcr.io/distroless/cc-debian12 as prod
 WORKDIR /app
 COPY --from=builder /app/target/release/crypto-wallets-service .
-COPY --from=builder /app/config/default.toml ./config/
+# Note: Do NOT copy config/default.toml - it contains development credentials.
+# Production configuration must be provided via environment variables
+# (APP__SERVER__PORT, APP__DATABASE__URL, APP__VAULT__TOKEN, etc.)
 # Use a non-root user for security
 USER 1000:1000
 CMD ["./crypto-wallets-service"]
