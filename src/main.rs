@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
     let grpc_service = crypto_wallets_service::api::MyWalletService {
         state: state.clone(),
     };
-    let grpc_addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.server.port + 1));
+    let grpc_addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.server.grpc_port()));
     tracing::info!("gRPC Server listening on {}", grpc_addr);
 
     // Create interceptor for auth
