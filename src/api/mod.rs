@@ -620,7 +620,7 @@ async fn sign_transaction(
     // Extract IP address for audit logging
     let ip_address = extract_client_ip(&headers, &state.config.server.trusted_proxies);
 
-    let signed_tx: String = state
+    let signed_tx: String = match state
         .wallet_manager
         .sign_tx(
             &wallet.encrypted_phrase,
@@ -629,20 +629,28 @@ async fn sign_transaction(
             &payload.unsigned_tx,
         )
         .await
-        .map_err(|e: anyhow::Error| {
+    {
+        Ok(tx) => tx,
+        Err(e) => {
             tracing::error!("Signing failed: {}", e);
-            let _ = state.db.log_audit_event(
-                "sign_transaction",
-                Some(id),
-                "failed",
-                ip_address.clone(),
-                Some(serde_json::json!({ "error": e.to_string() })),
-            );
-            (
+            // Audit log the failure - properly awaited
+            let _ = state
+                .db
+                .log_audit_event(
+                    "sign_transaction",
+                    Some(id),
+                    "failed",
+                    ip_address.clone(),
+                    Some(serde_json::json!({ "error": e.to_string() })),
+                )
+                .await
+                .map_err(|e| tracing::error!("Failed to write audit log: {}", e));
+            return Err((
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal error".to_string(),
-            )
-        })?;
+            ));
+        }
+    };
 
     // Audit Log Success
     let _ = state
