@@ -64,11 +64,18 @@ impl Default for RetryConfig {
 
 impl VaultClient {
     pub fn new(address: String, token: String, key_id: String) -> Self {
+        // Build client with timeouts to prevent hanging on network issues
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))        // Total request timeout
+            .connect_timeout(Duration::from_secs(5)) // Connection timeout
+            .build()
+            .expect("Failed to build reqwest client");
+        
         Self {
             address,
             token,
             key_id,
-            client: reqwest::Client::new(),
+            client,
         }
     }
 
