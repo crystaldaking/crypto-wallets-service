@@ -20,6 +20,13 @@ async fn main() -> anyhow::Result<()> {
     // Load config
     let config = AppConfig::build().expect("Failed to load configuration");
 
+    // Security warning if API key is not configured
+    if config.server.api_key.is_none() {
+        tracing::warn!("⚠️  SECURITY WARNING: API key is not configured!");
+        tracing::warn!("⚠️  All endpoints are accessible without authentication.");
+        tracing::warn!("⚠️  Set APP__SERVER__API_KEY environment variable to secure the API.");
+    }
+
     // Connect to DB with configurable pool size
     let pool = PgPoolOptions::new()
         .max_connections(config.database.pool_size)
