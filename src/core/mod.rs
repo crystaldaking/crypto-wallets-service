@@ -1,5 +1,5 @@
 use crate::vault::VaultClient;
-use alloy::primitives::B256;
+use alloy::primitives::{Address as AlloyAddress, B256};
 use alloy::signers::Signer;
 use alloy::signers::local::PrivateKeySigner;
 use coins_bip32::path::DerivationPath;
@@ -48,6 +48,18 @@ impl Network {
             Network::Solana => format!("m/44'/501'/0'/0/{}", index),
             Network::Ton => format!("m/44'/607'/0'/0/{}", index),
         }
+    }
+
+    /// Converts an Ethereum address to EIP-55 checksum format.
+    /// 
+    /// EIP-55: Mixed-case checksum address encoding
+    /// https://eips.ethereum.org/EIPS/eip-55
+    fn to_checksum_address(address: &str) -> String {
+        // Parse address using alloy and convert to checksum format
+        let alloy_addr = AlloyAddress::parse_checksummed(address, None)
+            .or_else(|_| AlloyAddress::from_str(address))
+            .unwrap_or_else(|_| panic!("Invalid Ethereum address: {}", address));
+        alloy_addr.to_checksum(None)
     }
 }
 
@@ -99,8 +111,10 @@ impl WalletManager {
                 let signer = PrivateKeySigner::from_bytes(&B256::from_slice(
                     signing_key.to_bytes().as_ref(),
                 ))?;
-                let address = signer.address();
-                Ok(Address::new(address.to_string()))
+                let address = signer.address().to_string();
+                // Apply EIP-55 checksum encoding
+                let checksum_address = Network::to_checksum_address(&address);
+                Ok(Address::new(checksum_address))
             }
             Network::Tron => {
                 let signing_key: &SigningKey = derived_xpriv.as_ref();
@@ -312,12 +326,18 @@ mod tests {
 
         // 1. Ethereum
         // Path: m/44'/60'/0'/0/0
-        // Expected Addr: 0x9858Effd232B4033E42d90030DCa8d0F1C717Cd4 (Mixed case per checksum usually, but here we just check value)
+        // Verify EIP-55 checksum format (mixed case, not all lowercase)
         let eth_addr =
             WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ethereum, 0).unwrap();
         println!("Eth: {}", eth_addr);
-        assert!(eth_addr.to_string().to_lowercase().starts_with("0x"));
+        assert!(eth_addr.to_string().starts_with("0x"));
         assert_eq!(eth_addr.to_string().len(), 42);
+        // Address should be mixed-case (EIP-55), not all lowercase
+        let addr_str = eth_addr.to_string();
+        assert!(
+            addr_str.chars().any(|c| c.is_ascii_uppercase()),
+            "EIP-55 address should contain uppercase letters"
+        );
 
         // 2. Tron
         // Path: m/44'/195'/0'/0/0
@@ -345,5 +365,39 @@ mod tests {
         assert_eq!(decoded_ton.len(), 36); // 1 flags + 1 workchain + 32 hash + 2 crc
         assert_eq!(decoded_ton[0], 0x11);
         assert_eq!(decoded_ton[1], 0x00);
+    }
+
+    #[test]
+    fn test_eip55_checksum() {
+        // Test vectors verified with alloy (EIP-55 specification)
+        // https://eips.ethereum.org/EIPS/eip-55
+        
+        // All caps input -> mixed case output
+        assert_eq!(
+            Network::to_checksum_address("0x52908400098527886e0f7030069857d2e4169ee7"),
+            "0x52908400098527886E0F7030069857D2E4169EE7"
+        );
+        
+        // All lower input -> mixed case output
+        assert_eq!(
+            Network::to_checksum_address("0x8617e340b3d01fa5f11f306f4090fd50e238070d"),
+            "0x8617E340B3D01FA5F11F306F4090FD50E238070D"
+        );
+        
+        // Already checksummed should remain the same
+        assert_eq!(
+            Network::to_checksum_address("0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"),
+            "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
+        );
+        
+        // Without 0x prefix
+        assert_eq!(
+            Network::to_checksum_address("52908400098527886e0f7030069857d2e4169ee7"),
+            "0x52908400098527886E0F7030069857D2E4169EE7"
+        );
+        
+        // Test that result is not all lowercase (contains some uppercase)
+        let result = Network::to_checksum_address("0x52908400098527886e0f7030069857d2e4169ee7");
+        assert!(result.chars().any(|c| c.is_ascii_uppercase() && c.is_ascii_alphabetic()));
     }
 }
