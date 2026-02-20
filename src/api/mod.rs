@@ -34,6 +34,22 @@ pub struct AddressQuery {
     pub index: u32,
 }
 
+#[derive(Deserialize, ToSchema, IntoParams)]
+pub struct PaginationQuery {
+    #[serde(default = "default_page")]
+    pub page: i64,
+    #[serde(default = "default_per_page")]
+    pub per_page: i64,
+}
+
+fn default_page() -> i64 {
+    1
+}
+
+fn default_per_page() -> i64 {
+    20
+}
+
 pub mod grpc {
     tonic::include_proto!("crypto_wallet.v1");
 }
@@ -253,7 +269,7 @@ use utoipa_swagger_ui::SwaggerUi;
         sign_transaction
     ),
     components(
-        schemas(CreateWalletRequest, SignTxRequest, WalletResponse, crate::db::DerivedAddress)
+        schemas(CreateWalletRequest, SignTxRequest, WalletResponse, PaginatedWalletsResponse, crate::db::DerivedAddress)
     ),
     tags(
         (name = "wallets", description = "Wallet management endpoints")
@@ -467,11 +483,23 @@ async fn create_wallet(
     Ok(Json(WalletResponse::from(wallet)))
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct PaginatedWalletsResponse {
+    pub data: Vec<WalletResponse>,
+    pub page: i64,
+    pub per_page: i64,
+    pub total: i64,
+    pub total_pages: i64,
+}
+
 #[utoipa::path(
     get,
     path = "/api/v1/wallets",
+    params(
+        PaginationQuery
+    ),
     responses(
-        (status = 200, description = "List all wallets", body = Vec<WalletResponse>)
+        (status = 200, description = "List wallets with pagination", body = PaginatedWalletsResponse)
     ),
     security(
         ("api_key" = [])
@@ -479,16 +507,53 @@ async fn create_wallet(
 )]
 async fn list_wallets(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<WalletResponse>>, (axum::http::StatusCode, String)> {
-    let wallets: Vec<crate::db::MasterWallet> =
-        state.db.get_wallets().await.map_err(|e: sqlx::Error| {
-            tracing::error!("Database error: {}", e);
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal error".to_string(),
-            )
-        })?;
-    let response: Vec<WalletResponse> = wallets.into_iter().map(WalletResponse::from).collect();
+    Query(query): Query<PaginationQuery>,
+) -> Result<Json<PaginatedWalletsResponse>, (axum::http::StatusCode, String)> {
+    // Validate pagination parameters
+    if query.page < 1 {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "Page must be >= 1".to_string(),
+        ));
+    }
+    if query.per_page < 1 || query.per_page > 100 {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "per_page must be between 1 and 100".to_string(),
+        ));
+    }
+
+    let (wallets, total) = tokio::join!(
+        state.db.get_wallets_paginated(query.page, query.per_page),
+        state.db.get_wallets_count()
+    );
+
+    let wallets = wallets.map_err(|e: sqlx::Error| {
+        tracing::error!("Database error: {}", e);
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal error".to_string(),
+        )
+    })?;
+
+    let total = total.map_err(|e: sqlx::Error| {
+        tracing::error!("Database error: {}", e);
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal error".to_string(),
+        )
+    })?;
+
+    let total_pages = (total + query.per_page - 1) / query.per_page;
+
+    let response = PaginatedWalletsResponse {
+        data: wallets.into_iter().map(WalletResponse::from).collect(),
+        page: query.page,
+        per_page: query.per_page,
+        total,
+        total_pages,
+    };
+
     Ok(Json(response))
 }
 

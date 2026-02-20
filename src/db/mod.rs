@@ -67,6 +67,29 @@ impl DbClient {
             .await
     }
 
+    /// Get wallets with pagination
+    pub async fn get_wallets_paginated(
+        &self,
+        page: i64,
+        per_page: i64,
+    ) -> Result<Vec<MasterWallet>, sqlx::Error> {
+        let offset = (page - 1) * per_page;
+        sqlx::query_as::<_, MasterWallet>(
+            "SELECT * FROM master_wallets ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+        )
+        .bind(per_page)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Get total count of wallets
+    pub async fn get_wallets_count(&self) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM master_wallets")
+            .fetch_one(&self.pool)
+            .await
+    }
+
     pub async fn get_wallet_by_id(&self, id: Uuid) -> Result<MasterWallet, sqlx::Error> {
         sqlx::query_as::<_, MasterWallet>("SELECT * FROM master_wallets WHERE id = $1")
             .bind(id)
