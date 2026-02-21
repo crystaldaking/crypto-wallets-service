@@ -436,13 +436,24 @@ async fn health_check(State(state): State<Arc<AppState>>) -> (StatusCode, Json<s
         Err(_) => "error",
     };
 
-    // Simple Vault check (attempt to encrypt a dummy value to verify transit engine is up)
-    let vault_status = match state.vault.encrypt(b"health_check").await {
-        Ok(_) => "ok",
-        Err(_) => "error",
+    // Get circuit breaker state
+    let circuit_state = state.vault.circuit_state().await;
+    
+    // Simple Vault check - only if circuit is not open
+    let vault_status = if circuit_state == "open" {
+        "degraded"
+    } else {
+        match state.vault.encrypt(b"health_check").await {
+            Ok(_) => "ok",
+            Err(crate::vault::VaultError::CircuitOpen) => "degraded",
+            Err(_) => "error",
+        }
     };
 
     let status_code = if db_status == "ok" && vault_status == "ok" {
+        StatusCode::OK
+    } else if db_status == "ok" && vault_status == "degraded" {
+        // Service is operational but Vault is in recovery
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
@@ -451,10 +462,15 @@ async fn health_check(State(state): State<Arc<AppState>>) -> (StatusCode, Json<s
     (
         status_code,
         Json(serde_json::json!({
-            "status": if status_code == StatusCode::OK { "ok" } else { "error" },
+            "status": if status_code == StatusCode::OK { 
+                if vault_status == "degraded" { "degraded" } else { "ok" }
+            } else { 
+                "error" 
+            },
             "components": {
                 "database": db_status,
                 "vault": vault_status,
+                "vault_circuit_state": circuit_state,
             }
         })),
     )
@@ -515,10 +531,16 @@ async fn create_wallet(
             .await
             .map_err(|e: crate::vault::VaultError| {
                 tracing::error!("Vault encryption failed: {}", e);
-                (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal error".to_string(),
-                )
+                match e {
+                    crate::vault::VaultError::CircuitOpen => (
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                        "Vault service temporarily unavailable".to_string(),
+                    ),
+                    _ => (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "Internal error".to_string(),
+                    ),
+                }
             })?;
 
     tracing::info!("Saving wallet to DB...");
