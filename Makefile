@@ -1,4 +1,4 @@
-.PHONY: up down run test test-int build lint fmt
+.PHONY: up down run run-dev test test-int build lint fmt env-check
 
 # Start infrastructure (Postgres, Vault)
 up:
@@ -12,8 +12,20 @@ infra:
 down:
 	docker-compose down
 
-# Run the application
+# Run the application locally with development defaults
+# Automatically starts infrastructure if not running and sets dev API key
 run:
+	@echo "Checking infrastructure..."
+	@docker-compose ps | grep -q "Up" || (echo "Starting infrastructure..." && docker-compose up -d db vault)
+	@echo "Waiting for services..."
+	@sleep 2
+	@echo "Starting Crypto Wallets Service..."
+	APP__SERVER__API_KEY=dev-local-key-change-in-production \
+	APP__DATABASE__URL=postgres://postgres:postgres@localhost:5432/wallets \
+	APP__VAULT__ADDRESS=http://localhost:8200 \
+	APP__VAULT__TOKEN=root \
+	APP__VAULT__KEY_ID=wallet-master-key \
+	ALLOW_UNAUTHENTICATED=false \
 	cargo run
 
 # Run unit tests
@@ -35,3 +47,25 @@ lint:
 # Format code
 fmt:
 	cargo fmt
+
+# Quick development run (assumes infrastructure is already running)
+run-dev:
+	@echo "Starting with development defaults..."
+	APP__SERVER__API_KEY=dev-local-key-change-in-production \
+	APP__DATABASE__URL=postgres://postgres:postgres@localhost:5432/wallets \
+	APP__VAULT__ADDRESS=http://localhost:8200 \
+	APP__VAULT__TOKEN=root \
+	APP__VAULT__KEY_ID=wallet-master-key \
+	ALLOW_UNAUTHENTICATED=false \
+	cargo run
+
+# Check if environment is ready
+env-check:
+	@echo "Checking environment..."
+	@echo "Postgres: $$(docker-compose ps | grep db | grep -q "Up" && echo "✅ Running" || echo "❌ Not running")"
+	@echo "Vault: $$(docker-compose ps | grep vault | grep -q "Up" && echo "✅ Running" || echo "❌ Not running")"
+	@echo ""
+	@echo "Default development credentials:"
+	@echo "  API Key: dev-local-key-change-in-production"
+	@echo "  Database: postgres://postgres:postgres@localhost:5432/wallets"
+	@echo "  Vault: http://localhost:8200 (token: root)"
