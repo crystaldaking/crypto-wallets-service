@@ -23,6 +23,19 @@ All notable changes to this project will be documented in this file.
 - Updated Makefile to include Redis environment variables
 - Health check includes Redis status when enabled
 
+### Documentation
+- Updated README.md and README.ru.md with v1.0.8 features
+- Added Kubernetes deployment section
+- Documented Redis configuration options
+- Added new API endpoints (liveness/readiness probes)
+
+### Kubernetes Manifests
+- Added base k8s manifests (deployment, service, hpa, pdb)
+- Added Kustomize overlays for production and staging
+- Added comprehensive README for K8s deployment
+- Added migration job template
+- Documented stateless architecture readiness
+
 ## [1.0.7] - 2026-02-21
 
 ### Security

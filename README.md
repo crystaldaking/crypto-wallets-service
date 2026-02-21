@@ -12,6 +12,11 @@ A high-performance, secure microservice for generating, storing, and signing cry
     *   Mandatory API key authentication (with explicit opt-out for development).
     *   Secrets redacted from logs (`[REDACTED]`).
 *   **HD Wallets**: Hierarchical Deterministic wallet generation (BIP-32/39/44).
+*   **Caching**: Two-layer caching with in-memory LRU and Redis for high performance.
+*   **Resilience**:
+    *   Circuit Breaker pattern for Vault operations.
+    *   Graceful shutdown support (SIGTERM/SIGINT).
+    *   Kubernetes ready with liveness and readiness probes.
 *   **Observability**:
     *   Prometheus Metrics (`/metrics`).
     *   Structured Logging with `X-Request-ID` tracing.
@@ -29,6 +34,7 @@ A high-performance, secure microservice for generating, storing, and signing cry
 
 *   **API Layer**: Rust (Axum) - Handles HTTP/gRPC requests.
 *   **Storage**: PostgreSQL - Stores encrypted wallet metadata and derivation paths.
+*   **Cache**: Redis (optional) - Shared cache for derived addresses across instances.
 *   **Key Management**: HashiCorp Vault - Handles encryption/decryption on-the-fly. Key material never leaves the secure memory of the signing service.
 
 ## 🏁 Getting Started
@@ -52,7 +58,7 @@ A high-performance, secure microservice for generating, storing, and signing cry
     ```bash
     make up
     ```
-    This starts Postgres (5432) and a self-configuring Vault (8200). 
+    This starts Postgres (5432), Vault (8200), and Redis (6379). 
     *Note: Vault is automatically initialized with the transit engine and master key via `docker/vault-init.sh`.*
 
 2.  **Set API Key** (required for production):
@@ -100,6 +106,9 @@ Configuration is handled via Environment Variables (prefix: `APP__`, separator: 
 | `APP__VAULT__ADDRESS` | `http://127.0.0.1:8200` | Vault Address |
 | `APP__VAULT__TOKEN` | `root` | Vault Token |
 | `APP__VAULT__KEY_ID` | `wallet-master-key` | Transit encryption key name |
+| `APP__REDIS__URL` | — | Redis connection URL (optional) |
+| `APP__REDIS__ENABLED` | `false` | Enable Redis caching |
+| `APP__REDIS__TTL_SECS` | `3600` | Cache TTL in seconds |
 
 ### Example
 
@@ -115,6 +124,8 @@ export APP__VAULT__TOKEN="root"
 ## 📝 API Endpoints
 
 *   **Health Check**: `GET /api/v1/health`
+*   **Liveness Probe** (K8s): `GET /api/v1/health/live`
+*   **Readiness Probe** (K8s): `GET /api/v1/health/ready`
 *   **Create Wallet**: `POST /api/v1/wallets`
 *   **List Wallets** (paginated): `GET /api/v1/wallets?page=1&per_page=20`
 *   **Get Address**: `GET /api/v1/wallets/{id}/address/{network}?index=0`
@@ -248,12 +259,28 @@ docker run -p 3000:3000 \
   crypto-wallets-service:latest
 ```
 
+## ☸️ Kubernetes Deployment
+
+The service is **stateless** and ready for Kubernetes:
+
+*   **Liveness Probe**: `/api/v1/health/live` - Returns 200 if the process is running.
+*   **Readiness Probe**: `/api/v1/health/ready` - Returns 200 only when DB and Vault are accessible.
+*   **Graceful Shutdown**: Handles SIGTERM with 30-second timeout.
+*   **HPA Ready**: Can be scaled horizontally with Redis for shared caching.
+
+See `k8s/` directory for ready-to-use manifests:
+
+```bash
+# Deploy to Kubernetes
+kubectl apply -k k8s/overlays/production/
+```
+
 ## 🔒 Security Notes
 
 *   **API Key is mandatory** - Service will not start without `APP__SERVER__API_KEY` unless `ALLOW_UNAUTHENTICATED=true` is explicitly set (dev only).
 *   Ensure Vault is sealed and running in production mode for real deployments.
 *   Rotate the `VAULT_TOKEN` regularly.
-*   Use TLS for all connections (Database, Vault, HTTP) in production.
+*   Use TLS for all connections (Database, Vault, Redis, HTTP) in production.
 *   All secrets are redacted from logs (`[REDACTED]`).
 
 ## 📄 License
@@ -262,4 +289,4 @@ MIT
 
 ---
 
-**Version 1.0.5** - See [CHANGELOG.md](CHANGELOG.md) for release notes.
+**Version 1.0.8** - See [CHANGELOG.md](CHANGELOG.md) for release notes.
