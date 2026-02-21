@@ -63,7 +63,23 @@ async fn main() -> anyhow::Result<()> {
         config.vault.token.clone(),
         config.vault.key_id.clone(),
     );
-    let wallet_manager = WalletManager::new(vault_client.clone());
+
+    // Initialize Redis if enabled
+    let wallet_manager = if config.redis.enabled {
+        match crypto_wallets_service::redis::RedisClient::new(&config.redis.url).await {
+            Ok(redis_client) => {
+                tracing::info!("Redis cache initialized at {}", config.redis.url);
+                WalletManager::with_redis(vault_client.clone(), redis_client)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to connect to Redis, using local cache only: {}", e);
+                WalletManager::new(vault_client.clone())
+            }
+        }
+    } else {
+        tracing::info!("Redis cache disabled, using local cache only");
+        WalletManager::new(vault_client.clone())
+    };
 
     let state = Arc::new(AppState {
         db: db_client,

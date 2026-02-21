@@ -1,12 +1,12 @@
 .PHONY: up down run run-dev test test-int build lint fmt env-check
 
-# Start infrastructure (Postgres, Vault)
+# Start infrastructure (Postgres, Vault, Redis)
 up:
 	docker-compose up -d
 
-# Start only infrastructure dependencies (Postgres, Vault) for local development
+# Start only infrastructure dependencies (Postgres, Vault, Redis) for local development
 infra:
-	docker-compose up -d db vault
+	docker-compose up -d db vault redis
 
 # Stop infrastructure
 down:
@@ -16,7 +16,7 @@ down:
 # Automatically starts infrastructure if not running and sets dev API key
 run:
 	@echo "Checking infrastructure..."
-	@docker-compose ps | grep -q "Up" || (echo "Starting infrastructure..." && docker-compose up -d db vault)
+	@docker-compose ps | grep -q "Up" || (echo "Starting infrastructure..." && docker-compose up -d db vault redis)
 	@echo "Waiting for services..."
 	@sleep 2
 	@echo "Starting Crypto Wallets Service..."
@@ -25,6 +25,9 @@ run:
 	APP__VAULT__ADDRESS=http://localhost:8200 \
 	APP__VAULT__TOKEN=root \
 	APP__VAULT__KEY_ID=wallet-master-key \
+	APP__REDIS__URL=redis://localhost:6379 \
+	APP__REDIS__ENABLED=true \
+	APP__REDIS__TTL_SECS=3600 \
 	ALLOW_UNAUTHENTICATED=false \
 	cargo run
 
@@ -56,6 +59,9 @@ run-dev:
 	APP__VAULT__ADDRESS=http://localhost:8200 \
 	APP__VAULT__TOKEN=root \
 	APP__VAULT__KEY_ID=wallet-master-key \
+	APP__REDIS__URL=redis://localhost:6379 \
+	APP__REDIS__ENABLED=true \
+	APP__REDIS__TTL_SECS=3600 \
 	ALLOW_UNAUTHENTICATED=false \
 	cargo run
 
@@ -64,8 +70,10 @@ env-check:
 	@echo "Checking environment..."
 	@echo "Postgres: $$(docker-compose ps | grep db | grep -q "Up" && echo "✅ Running" || echo "❌ Not running")"
 	@echo "Vault: $$(docker-compose ps | grep vault | grep -q "Up" && echo "✅ Running" || echo "❌ Not running")"
+	@echo "Redis: $$(docker-compose ps | grep redis | grep -q "Up" && echo "✅ Running" || echo "❌ Not running")"
 	@echo ""
 	@echo "Default development credentials:"
 	@echo "  API Key: dev-local-key-change-in-production"
 	@echo "  Database: postgres://postgres:postgres@localhost:5432/crypto_wallets"
 	@echo "  Vault: http://localhost:8200 (token: root)"
+	@echo "  Redis: redis://localhost:6379"

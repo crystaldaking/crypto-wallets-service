@@ -663,3 +663,65 @@ async fn grpc_integration_test() {
     
     println!("gRPC integration test passed!");
 }
+
+#[tokio::test]
+async fn redis_caching_integration_test() {
+    use crypto_wallets_service::redis::RedisClient;
+    
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_test_writer()
+        .try_init();
+
+    // Start Redis container
+    use testcontainers::{GenericImage, ImageExt, runners::AsyncRunner};
+    
+    let redis_image = GenericImage::new("redis", "7-alpine")
+        .with_exposed_port(testcontainers::core::ContainerPort::Tcp(6379));
+    
+    let redis_container = redis_image.start().await.expect("Failed to start Redis");
+    let redis_port = redis_container
+        .get_host_port_ipv4(6379)
+        .await
+        .expect("Failed to get Redis port");
+    let redis_url = format!("redis://127.0.0.1:{}", redis_port);
+    
+    // Wait for Redis to be ready
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    
+    // Create Redis client
+    let redis_client = RedisClient::new(&redis_url).await.expect("Failed to connect to Redis");
+    
+    // Test set and get
+    let key = "test:key";
+    let value = "test_value";
+    redis_client.set(key, &value).await.expect("Failed to set value");
+    
+    let result: Option<String> = redis_client.get(key).await.expect("Failed to get value");
+    assert_eq!(result, Some(value.to_string()));
+    
+    // Test with TTL
+    let key2 = "test:ttl_key";
+    let value2 = "ttl_value";
+    redis_client.set_with_ttl(key2, &value2, 1).await.expect("Failed to set with TTL");
+    
+    let result2: Option<String> = redis_client.get(key2).await.expect("Failed to get value");
+    assert_eq!(result2, Some(value2.to_string()));
+    
+    // Wait for expiration
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let expired: Option<String> = redis_client.get(key2).await.expect("Failed to get expired value");
+    assert_eq!(expired, None);
+    
+    // Test key generation
+    let addr_key = RedisClient::address_key("wallet-123", "eth", 0);
+    assert_eq!(addr_key, "addr:wallet-123:Ethereum:0");
+    
+    let health_key = RedisClient::health_key("database");
+    assert_eq!(health_key, "health:database");
+    
+    // Cleanup
+    redis_client.delete(key).await.expect("Failed to delete key");
+    
+    println!("Redis caching integration test passed!");
+}

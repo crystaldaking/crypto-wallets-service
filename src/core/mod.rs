@@ -1,3 +1,4 @@
+use crate::redis::RedisClient;
 use crate::vault::VaultClient;
 use alloy::primitives::{Address as AlloyAddress, B256};
 use alloy::signers::Signer;
@@ -79,13 +80,17 @@ struct AddressCacheKey {
 
 pub struct WalletManager {
     vault: VaultClient,
-    /// LRU cache for derived addresses to avoid repeated computation
+    /// LRU cache for derived addresses (local, fast)
     address_cache: Arc<RwLock<LruCache<AddressCacheKey, Address>>>,
+    /// Optional Redis client for distributed caching
+    redis: Option<RedisClient>,
 }
 
 impl WalletManager {
     /// Default cache size for derived addresses
     const DEFAULT_CACHE_SIZE: usize = 1000;
+    /// Default TTL for Redis cache in seconds
+    const DEFAULT_REDIS_TTL_SECS: u64 = 3600;
 
     pub fn new(vault: VaultClient) -> Self {
         let cache = LruCache::new(
@@ -95,6 +100,20 @@ impl WalletManager {
         Self {
             vault,
             address_cache: Arc::new(RwLock::new(cache)),
+            redis: None,
+        }
+    }
+
+    /// Create with Redis client
+    pub fn with_redis(vault: VaultClient, redis: RedisClient) -> Self {
+        let cache = LruCache::new(
+            NonZeroUsize::new(Self::DEFAULT_CACHE_SIZE).unwrap()
+        );
+        
+        Self {
+            vault,
+            address_cache: Arc::new(RwLock::new(cache)),
+            redis: Some(redis),
         }
     }
 
@@ -108,6 +127,7 @@ impl WalletManager {
         Self {
             vault,
             address_cache: Arc::new(RwLock::new(cache)),
+            redis: None,
         }
     }
 
@@ -123,6 +143,18 @@ impl WalletManager {
     pub async fn clear_cache(&self) {
         let mut cache = self.address_cache.write().await;
         cache.clear();
+    }
+
+    /// Generate cache key for Redis
+    fn redis_key(encrypted_seed: &str, network: Network, index: u32) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        let mut hasher = DefaultHasher::new();
+        encrypted_seed.hash(&mut hasher);
+        let hash = hasher.finish();
+        
+        format!("addr:{}:{:?}:{}", hash, network, index)
     }
 
     pub fn generate_mnemonic(length: usize) -> anyhow::Result<String> {
@@ -148,17 +180,34 @@ impl WalletManager {
             index,
         };
 
-        // Try to get from cache first (need write lock for get since it updates LRU)
+        // 1. Try Redis first (if available)
+        if let Some(ref redis) = self.redis {
+            let redis_key = Self::redis_key(encrypted_seed, network, index);
+            match redis.get::<String>(&redis_key).await {
+                Ok(Some(cached_addr)) => {
+                    tracing::debug!("Redis cache hit for {:?} index {}", network, index);
+                    return Ok(Address::new(cached_addr));
+                }
+                Ok(None) => {
+                    tracing::debug!("Redis cache miss for {:?} index {}", network, index);
+                }
+                Err(e) => {
+                    tracing::warn!("Redis error, falling back to local cache: {}", e);
+                }
+            }
+        }
+
+        // 2. Try local LRU cache
         {
             let mut cache = self.address_cache.write().await;
             if let Some(cached_address) = cache.get(&cache_key) {
-                tracing::debug!("Address cache hit for {:?} index {}", network, index);
+                tracing::debug!("Local cache hit for {:?} index {}", network, index);
                 return Ok(cached_address.clone());
             }
         }
 
-        // Cache miss - derive the address
-        tracing::debug!("Address cache miss for {:?} index {}", network, index);
+        // 3. Cache miss - derive the address
+        tracing::debug!("Cache miss - deriving address for {:?} index {}", network, index);
         let mut seed_bytes = self.vault.decrypt(encrypted_seed).await?;
         let mnemonic_phrase = String::from_utf8(seed_bytes.clone())
             .map_err(|e| {
@@ -178,10 +227,20 @@ impl WalletManager {
                 e
             })?;
 
-        // Store in cache
+        // Store in local cache
         {
             let mut cache = self.address_cache.write().await;
             cache.put(cache_key, address.clone());
+        }
+
+        // Store in Redis (if available)
+        if let Some(ref redis) = self.redis {
+            let redis_key = Self::redis_key(encrypted_seed, network, index);
+            if let Err(e) = redis.set_with_ttl(&redis_key, &address.to_string(), Self::DEFAULT_REDIS_TTL_SECS).await {
+                tracing::warn!("Failed to cache address in Redis: {}", e);
+            } else {
+                tracing::debug!("Address cached in Redis for {:?} index {}", network, index);
+            }
         }
 
         Ok(address)

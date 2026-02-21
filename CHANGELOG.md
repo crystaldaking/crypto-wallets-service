@@ -6,16 +6,22 @@ All notable changes to this project will be documented in this file.
 
 ### Infrastructure
 - Add Redis caching support with configurable TTL
-  - Cache derived addresses with Redis (migrating from in-memory LRU)
-  - Cache health check status
+  - Cache derived addresses with Redis (two-tier cache: local LRU + Redis)
+  - Automatic fallback to local cache if Redis unavailable
   - Connection pooling with ConnectionManager
   - Optional Redis (can be disabled via config)
+  - Cache key format: `addr:{hash}:{network}:{index}`
 
 ### Kubernetes Ready
 - Add liveness probe endpoint: `/api/v1/health/live`
 - Add readiness probe endpoint: `/api/v1/health/ready`
 - Extended health check with latency metrics for all components
 - Service is ready only when all dependencies are healthy
+
+### Development Environment
+- Add Redis to docker-compose infrastructure
+- Updated Makefile to include Redis environment variables
+- Health check includes Redis status when enabled
 
 ## [1.0.7] - 2026-02-21
 
