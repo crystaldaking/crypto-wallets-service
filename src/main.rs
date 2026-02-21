@@ -20,11 +20,21 @@ async fn main() -> anyhow::Result<()> {
     // Load config
     let config = AppConfig::build().expect("Failed to load configuration");
 
-    // Security warning if API key is not configured
+    // Require API key for production or explicit opt-out
     if config.server.api_key.is_none() {
-        tracing::warn!("⚠️  SECURITY WARNING: API key is not configured!");
-        tracing::warn!("⚠️  All endpoints are accessible without authentication.");
-        tracing::warn!("⚠️  Set APP__SERVER__API_KEY environment variable to secure the API.");
+        let allow_unauthenticated = std::env::var("ALLOW_UNAUTHENTICATED")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
+        
+        if !allow_unauthenticated {
+            tracing::error!("❌ API key is not configured!");
+            tracing::error!("❌ Set APP__SERVER__API_KEY environment variable to start the service.");
+            tracing::error!("❌ Or set ALLOW_UNAUTHENTICATED=true to explicitly allow unauthenticated access (NOT RECOMMENDED FOR PRODUCTION).");
+            panic!("API key is required. Set APP__SERVER__API_KEY or ALLOW_UNAUTHENTICATED=true");
+        }
+        
+        tracing::warn!("⚠️  SECURITY WARNING: Running without API key authentication!");
+        tracing::warn!("⚠️  This is NOT recommended for production environments.");
     }
 
     // Connect to DB with configurable pool size
