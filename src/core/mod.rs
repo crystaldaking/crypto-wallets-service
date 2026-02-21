@@ -5,8 +5,14 @@ use alloy::signers::local::PrivateKeySigner;
 use coins_bip32::path::DerivationPath;
 use coins_bip32::prelude::{SigningKey, XPriv};
 use coins_bip39::{English, Mnemonic};
+use lru::LruCache;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::num::NonZeroUsize;
 use std::str::FromStr;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use zeroize::Zeroize;
 
 use std::fmt;
@@ -32,7 +38,7 @@ impl From<String> for Address {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Network {
     Ethereum,
     Tron,
@@ -63,13 +69,60 @@ impl Network {
     }
 }
 
+/// Cache key for derived addresses
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct AddressCacheKey {
+    encrypted_seed_hash: u64,
+    network: Network,
+    index: u32,
+}
+
 pub struct WalletManager {
     vault: VaultClient,
+    /// LRU cache for derived addresses to avoid repeated computation
+    address_cache: Arc<RwLock<LruCache<AddressCacheKey, Address>>>,
 }
 
 impl WalletManager {
+    /// Default cache size for derived addresses
+    const DEFAULT_CACHE_SIZE: usize = 1000;
+
     pub fn new(vault: VaultClient) -> Self {
-        Self { vault }
+        let cache = LruCache::new(
+            NonZeroUsize::new(Self::DEFAULT_CACHE_SIZE).unwrap()
+        );
+        
+        Self {
+            vault,
+            address_cache: Arc::new(RwLock::new(cache)),
+        }
+    }
+
+    /// Create with custom cache size
+    pub fn with_cache_size(vault: VaultClient, cache_size: usize) -> Self {
+        let cache_size = std::cmp::max(1, cache_size);
+        let cache = LruCache::new(
+            NonZeroUsize::new(cache_size).unwrap()
+        );
+        
+        Self {
+            vault,
+            address_cache: Arc::new(RwLock::new(cache)),
+        }
+    }
+
+    /// Get cache statistics for monitoring
+    pub async fn cache_stats(&self) -> (usize, usize) {
+        let cache = self.address_cache.read().await;
+        let cap = cache.cap().get();
+        let len = cache.len();
+        (len, cap)
+    }
+
+    /// Clear the address cache
+    pub async fn clear_cache(&self) {
+        let mut cache = self.address_cache.write().await;
+        cache.clear();
     }
 
     pub fn generate_mnemonic(length: usize) -> anyhow::Result<String> {
@@ -84,12 +137,54 @@ impl WalletManager {
         network: Network,
         index: u32,
     ) -> anyhow::Result<Address> {
+        // Compute hash of encrypted_seed for cache key
+        let mut hasher = DefaultHasher::new();
+        encrypted_seed.hash(&mut hasher);
+        let encrypted_seed_hash = hasher.finish();
+        
+        let cache_key = AddressCacheKey {
+            encrypted_seed_hash,
+            network,
+            index,
+        };
+
+        // Try to get from cache first (need write lock for get since it updates LRU)
+        {
+            let mut cache = self.address_cache.write().await;
+            if let Some(cached_address) = cache.get(&cache_key) {
+                tracing::debug!("Address cache hit for {:?} index {}", network, index);
+                return Ok(cached_address.clone());
+            }
+        }
+
+        // Cache miss - derive the address
+        tracing::debug!("Address cache miss for {:?} index {}", network, index);
         let mut seed_bytes = self.vault.decrypt(encrypted_seed).await?;
-        let mnemonic =
-            Mnemonic::<English>::new_from_phrase(&String::from_utf8(seed_bytes.clone())?)?;
+        let mnemonic_phrase = String::from_utf8(seed_bytes.clone())
+            .map_err(|e| {
+                tracing::error!("Failed to convert seed bytes to UTF-8: {}", e);
+                e
+            })?;
+        let mnemonic = Mnemonic::<English>::new_from_phrase(&mnemonic_phrase)
+            .map_err(|e| {
+                tracing::error!("Failed to create mnemonic from phrase: {}", e);
+                e
+            })?;
         seed_bytes.zeroize();
 
-        Self::derive_address_from_mnemonic(&mnemonic, network, index)
+        let address = Self::derive_address_from_mnemonic(&mnemonic, network, index)
+            .map_err(|e| {
+                tracing::error!("Failed to derive address for {:?} index {}: {}", network, index, e);
+                e
+            })?;
+
+        // Store in cache
+        {
+            let mut cache = self.address_cache.write().await;
+            cache.put(cache_key, address.clone());
+        }
+
+        Ok(address)
     }
 
     // Extracted for testing without Vault
@@ -141,7 +236,8 @@ impl WalletManager {
             Network::Solana => {
                 let signing_key_bip32: &SigningKey = derived_xpriv.as_ref();
                 let seed_32: [u8; 32] =
-                    <[u8; 32]>::try_from(signing_key_bip32.to_bytes().as_ref())?;
+                    <[u8; 32]>::try_from(signing_key_bip32.to_bytes().as_ref())
+                    .map_err(|_| anyhow::anyhow!("Invalid signing key length for Solana: expected 32 bytes"))?;
                 let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed_32);
                 let public_key = signing_key.verifying_key();
                 Ok(Address::new(
@@ -151,7 +247,8 @@ impl WalletManager {
             Network::Ton => {
                 let signing_key_bip32: &SigningKey = derived_xpriv.as_ref();
                 let seed_32: [u8; 32] =
-                    <[u8; 32]>::try_from(signing_key_bip32.to_bytes().as_ref())?;
+                    <[u8; 32]>::try_from(signing_key_bip32.to_bytes().as_ref())
+                    .map_err(|_| anyhow::anyhow!("Invalid signing key length for TON: expected 32 bytes"))?;
                 let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed_32);
                 let public_key = signing_key.verifying_key();
 
@@ -225,7 +322,7 @@ impl WalletManager {
 
 /// Validates transaction format for the given network
 /// Returns decoded bytes or an error if format is invalid
-fn validate_transaction_format(network: Network, unsigned_tx: &str) -> anyhow::Result<Vec<u8>> {
+pub fn validate_transaction_format(network: Network, unsigned_tx: &str) -> anyhow::Result<Vec<u8>> {
     // Remove optional 0x prefix
     let hex_str = unsigned_tx.trim_start_matches("0x");
     
@@ -409,5 +506,240 @@ mod tests {
         // Test that result is not all lowercase (contains some uppercase)
         let result = Network::to_checksum_address("0x52908400098527886e0f7030069857d2e4169ee7").unwrap();
         assert!(result.chars().any(|c| c.is_ascii_uppercase() && c.is_ascii_alphabetic()));
+    }
+
+    #[test]
+    fn test_address_cache_key_hashing() {
+        // Test that AddressCacheKey implements Hash correctly
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        let key1 = AddressCacheKey {
+            encrypted_seed_hash: 12345,
+            network: Network::Ethereum,
+            index: 0,
+        };
+        
+        let key2 = AddressCacheKey {
+            encrypted_seed_hash: 12345,
+            network: Network::Ethereum,
+            index: 0,
+        };
+        
+        let key3 = AddressCacheKey {
+            encrypted_seed_hash: 12345,
+            network: Network::Solana,
+            index: 0,
+        };
+        
+        // Same keys should have same hash
+        let mut hasher1 = DefaultHasher::new();
+        key1.hash(&mut hasher1);
+        let hash1 = hasher1.finish();
+        
+        let mut hasher2 = DefaultHasher::new();
+        key2.hash(&mut hasher2);
+        let hash2 = hasher2.finish();
+        
+        assert_eq!(hash1, hash2);
+        
+        // Different networks should have different hashes
+        let mut hasher3 = DefaultHasher::new();
+        key3.hash(&mut hasher3);
+        let hash3 = hasher3.finish();
+        
+        assert_ne!(hash1, hash3);
+    }
+
+    #[test]
+    fn test_network_hash_impl() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        let networks = vec![
+            Network::Ethereum,
+            Network::Tron,
+            Network::Solana,
+            Network::Ton,
+        ];
+        
+        let mut hashes = std::collections::HashSet::new();
+        
+        for network in networks {
+            let mut hasher = DefaultHasher::new();
+            network.hash(&mut hasher);
+            let hash = hasher.finish();
+            // All networks should have unique hashes
+            assert!(hashes.insert(hash), "Duplicate hash found for {:?}", network);
+        }
+    }
+
+    #[test]
+    fn test_transaction_validation_empty() {
+        let result = validate_transaction_format(Network::Ethereum, "");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty"));
+    }
+
+    #[test]
+    fn test_transaction_validation_odd_length() {
+        let result = validate_transaction_format(Network::Ethereum, "0xabc");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("odd length"));
+    }
+
+    #[test]
+    fn test_transaction_validation_invalid_hex() {
+        let result = validate_transaction_format(Network::Ethereum, "0xGGGG");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("non-hex"));
+    }
+
+    #[test]
+    fn test_transaction_validation_ethereum_legacy_too_short() {
+        // Legacy transaction should be at least 45 bytes
+        let short_tx = "0xc0".to_string() + &"00".repeat(10);
+        let result = validate_transaction_format(Network::Ethereum, &short_tx);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too short"));
+    }
+
+    #[test]
+    fn test_transaction_validation_ethereum_eip1559() {
+        // Valid EIP-1559 transaction (type 0x02)
+        let tx = "0x02".to_string() + &"00".repeat(100);
+        let result = validate_transaction_format(Network::Ethereum, &tx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_transaction_validation_ethereum_eip2930() {
+        // Valid EIP-2930 transaction (type 0x01)
+        let tx = "0x01".to_string() + &"00".repeat(100);
+        let result = validate_transaction_format(Network::Ethereum, &tx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_transaction_validation_solana_too_short() {
+        let short_tx = "0x".to_string() + &"00".repeat(30);
+        let result = validate_transaction_format(Network::Solana, &short_tx);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too short"));
+    }
+
+    #[test]
+    fn test_transaction_validation_unknown_type() {
+        let tx = "0x05".to_string() + &"00".repeat(100);
+        let result = validate_transaction_format(Network::Ethereum, &tx);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown Ethereum transaction type"));
+    }
+
+    #[test]
+    fn test_sign_tx_with_test_mnemonic() {
+        // Use a known test mnemonic
+        let mnemonic_str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let mnemonic = Mnemonic::<English>::new_from_phrase(mnemonic_str).unwrap();
+        
+        // Test message to sign (32 bytes for Ethereum)
+        let message = b"test message for signing".to_vec();
+        
+        // Test Ethereum signing using derive_address_from_mnemonic logic
+        let eth_address = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ethereum, 0).unwrap();
+        assert!(eth_address.to_string().starts_with("0x"));
+        assert_eq!(eth_address.to_string().len(), 42);
+        
+        // Test Tron signing
+        let tron_address = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Tron, 0).unwrap();
+        assert!(tron_address.to_string().starts_with("T"));
+        
+        // Test Solana signing
+        let solana_address = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Solana, 0).unwrap();
+        assert!(solana_address.to_string().len() >= 32);
+        assert!(solana_address.to_string().len() <= 44);
+        
+        // Test TON signing
+        let ton_address = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ton, 0).unwrap();
+        assert!(ton_address.to_string().starts_with("EQ"));
+    }
+
+    #[test]
+    fn test_sign_tx_different_indices_produce_different_addresses() {
+        let mnemonic_str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let mnemonic = Mnemonic::<English>::new_from_phrase(mnemonic_str).unwrap();
+        
+        // Different indices should produce different addresses
+        let addr0 = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ethereum, 0).unwrap();
+        let addr1 = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ethereum, 1).unwrap();
+        let addr2 = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ethereum, 2).unwrap();
+        
+        assert_ne!(addr0.to_string(), addr1.to_string());
+        assert_ne!(addr1.to_string(), addr2.to_string());
+        assert_ne!(addr0.to_string(), addr2.to_string());
+    }
+
+    #[test]
+    fn test_sign_tx_deterministic_addresses() {
+        // Addresses should be deterministic - same mnemonic + index = same address
+        let mnemonic_str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let mnemonic = Mnemonic::<English>::new_from_phrase(mnemonic_str).unwrap();
+        
+        let addr1 = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ethereum, 0).unwrap();
+        let addr2 = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ethereum, 0).unwrap();
+        
+        assert_eq!(addr1.to_string(), addr2.to_string());
+        
+        // Same for other networks
+        let tron1 = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Tron, 5).unwrap();
+        let tron2 = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Tron, 5).unwrap();
+        assert_eq!(tron1.to_string(), tron2.to_string());
+    }
+
+    #[test]
+    fn test_transaction_validation_valid_solana() {
+        // Valid Solana transaction (at least 64 bytes)
+        let tx = "0x".to_string() + &"00".repeat(64);
+        let result = validate_transaction_format(Network::Solana, &tx);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 64);
+    }
+
+    #[test]
+    fn test_transaction_validation_valid_ton() {
+        // Valid TON transaction (at least 10 bytes)
+        let tx = "0x".to_string() + &"00".repeat(10);
+        let result = validate_transaction_format(Network::Ton, &tx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_transaction_validation_valid_tron() {
+        // Valid Tron transaction (at least 10 bytes)
+        let tx = "0x".to_string() + &"00".repeat(10);
+        let result = validate_transaction_format(Network::Tron, &tx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_eth_address_format() {
+        // Test that Ethereum addresses are properly checksummed
+        let mnemonic_str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let mnemonic = Mnemonic::<English>::new_from_phrase(mnemonic_str).unwrap();
+        
+        let address = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ethereum, 0).unwrap();
+        let addr_str = address.to_string();
+        
+        // Should start with 0x
+        assert!(addr_str.starts_with("0x"));
+        
+        // Should be 42 characters (0x + 40 hex chars)
+        assert_eq!(addr_str.len(), 42);
+        
+        // Should contain both upper and lower case (EIP-55)
+        let has_upper = addr_str.chars().any(|c| c.is_ascii_uppercase());
+        let has_lower = addr_str.chars().any(|c| c.is_ascii_lowercase());
+        assert!(has_upper, "EIP-55 address should contain uppercase letters");
+        assert!(has_lower, "EIP-55 address should contain lowercase letters");
     }
 }

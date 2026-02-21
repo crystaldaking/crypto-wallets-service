@@ -6,7 +6,7 @@ use crate::vault::VaultClient;
 use subtle::ConstantTimeEq;
 use axum::{
     Json, Router,
-    extract::{Path, Query, Request, State},
+    extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::Response as AxumResponse,
@@ -15,6 +15,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
+use validator::{Validate, ValidationError};
 
 pub struct AppState {
     pub db: DbClient,
@@ -23,9 +24,19 @@ pub struct AppState {
     pub config: AppConfig, // Added config to state
 }
 
-#[derive(Serialize, Deserialize, ToSchema)]
+fn validate_mnemonic_length(length: usize) -> Result<(), ValidationError> {
+    if length == 12 || length == 24 {
+        Ok(())
+    } else {
+        Err(ValidationError::new("mnemonic_length must be 12 or 24"))
+    }
+}
+
+#[derive(Serialize, Deserialize, ToSchema, Validate)]
 pub struct CreateWalletRequest {
+    #[validate(length(min = 1, max = 100, message = "Label must be between 1 and 100 characters"))]
     pub label: String,
+    #[validate(custom(function = "validate_mnemonic_length"))]
     pub mnemonic_length: Option<usize>,
 }
 
@@ -141,6 +152,13 @@ impl WalletService for MyWalletService {
         request: TonicRequest<GrpcCreateWalletRequest>,
     ) -> Result<TonicResponse<WalletInfo>, Status> {
         let req = request.into_inner();
+        
+        // Validate label length
+        if req.label.is_empty() || req.label.len() > 100 {
+            return Err(Status::invalid_argument(
+                "Label must be between 1 and 100 characters",
+            ));
+        }
         
         // Validate mnemonic length (same as HTTP endpoint)
         let length = req.mnemonic_length.unwrap_or(12) as usize;
@@ -328,7 +346,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     let mut protected_routes = Router::new()
         .route("/api/v1/wallets", post(create_wallet).get(list_wallets))
         .route("/api/v1/wallets/:id/address/:network", get(get_address))
-        .route("/api/v1/wallets/:id/sign", post(sign_transaction));
+        .route("/api/v1/wallets/:id/sign", post(sign_transaction))
+        .layer(DefaultBodyLimit::max(1024 * 1024)); // 1MB body limit
 
     if rate_limit_conf.enabled {
         let governor_conf = Arc::new(
@@ -417,13 +436,24 @@ async fn health_check(State(state): State<Arc<AppState>>) -> (StatusCode, Json<s
         Err(_) => "error",
     };
 
-    // Simple Vault check (attempt to encrypt a dummy value to verify transit engine is up)
-    let vault_status = match state.vault.encrypt(b"health_check").await {
-        Ok(_) => "ok",
-        Err(_) => "error",
+    // Get circuit breaker state
+    let circuit_state = state.vault.circuit_state().await;
+    
+    // Simple Vault check - only if circuit is not open
+    let vault_status = if circuit_state == "open" {
+        "degraded"
+    } else {
+        match state.vault.encrypt(b"health_check").await {
+            Ok(_) => "ok",
+            Err(crate::vault::VaultError::CircuitOpen) => "degraded",
+            Err(_) => "error",
+        }
     };
 
     let status_code = if db_status == "ok" && vault_status == "ok" {
+        StatusCode::OK
+    } else if db_status == "ok" && vault_status == "degraded" {
+        // Service is operational but Vault is in recovery
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
@@ -432,10 +462,15 @@ async fn health_check(State(state): State<Arc<AppState>>) -> (StatusCode, Json<s
     (
         status_code,
         Json(serde_json::json!({
-            "status": if status_code == StatusCode::OK { "ok" } else { "error" },
+            "status": if status_code == StatusCode::OK { 
+                if vault_status == "degraded" { "degraded" } else { "ok" }
+            } else { 
+                "error" 
+            },
             "components": {
                 "database": db_status,
                 "vault": vault_status,
+                "vault_circuit_state": circuit_state,
             }
         })),
     )
@@ -460,13 +495,24 @@ async fn create_wallet(
 ) -> Result<Json<WalletResponse>, (axum::http::StatusCode, String)> {
     tracing::info!("Received create_wallet request: label={}", payload.label);
 
-    let length = payload.mnemonic_length.unwrap_or(12);
-    if length != 12 && length != 24 {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "Mnemonic length must be 12 or 24".to_string(),
-        ));
+    // Validate request
+    if let Err(errors) = payload.validate() {
+        let error_msg = errors
+            .field_errors()
+            .iter()
+            .map(|(field, errs)| {
+                let messages: Vec<String> = errs
+                    .iter()
+                    .filter_map(|e| e.message.as_ref().map(|m| m.to_string()))
+                    .collect();
+                format!("{}: {}", field, messages.join(", "))
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err((axum::http::StatusCode::BAD_REQUEST, error_msg));
     }
+
+    let length = payload.mnemonic_length.unwrap_or(12);
 
     tracing::info!("Generating mnemonic...");
     let mnemonic = WalletManager::generate_mnemonic(length).map_err(|e: anyhow::Error| {
@@ -485,10 +531,16 @@ async fn create_wallet(
             .await
             .map_err(|e: crate::vault::VaultError| {
                 tracing::error!("Vault encryption failed: {}", e);
-                (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal error".to_string(),
-                )
+                match e {
+                    crate::vault::VaultError::CircuitOpen => (
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                        "Vault service temporarily unavailable".to_string(),
+                    ),
+                    _ => (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "Internal error".to_string(),
+                    ),
+                }
             })?;
 
     tracing::info!("Saving wallet to DB...");
@@ -520,6 +572,9 @@ async fn create_wallet(
         .await
         .map_err(|e| tracing::error!("Failed to write audit log: {}", e));
 
+    // Record metrics
+    metrics::counter!("wallets_created_total").increment(1);
+    
     tracing::info!("create_wallet completed successfully");
     Ok(Json(WalletResponse::from(wallet)))
 }
@@ -739,6 +794,8 @@ async fn sign_transaction(
         Ok(tx) => tx,
         Err(e) => {
             tracing::error!("Signing failed: {}", e);
+            // Record failure metric
+            metrics::counter!("sign_operations_total", "network" => payload.network.clone(), "status" => "failed").increment(1);
             // Audit log the failure - properly awaited
             let _ = state
                 .db
@@ -771,7 +828,116 @@ async fn sign_transaction(
         .await
         .map_err(|e| tracing::error!("Failed to write audit log: {}", e));
 
+    // Record success metric
+    metrics::counter!("sign_operations_total", "network" => payload.network.clone(), "status" => "success").increment(1);
+
     Ok(Json(serde_json::json!({
         "signed_tx": signed_tx
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use validator::Validate;
+
+    #[test]
+    fn test_create_wallet_request_validation_valid() {
+        let request = CreateWalletRequest {
+            label: "My Wallet".to_string(),
+            mnemonic_length: Some(12),
+        };
+        assert!(request.validate().is_ok());
+
+        let request24 = CreateWalletRequest {
+            label: "Test".to_string(),
+            mnemonic_length: Some(24),
+        };
+        assert!(request24.validate().is_ok());
+
+        // Default (None) is also valid
+        let request_default = CreateWalletRequest {
+            label: "Test".to_string(),
+            mnemonic_length: None,
+        };
+        assert!(request_default.validate().is_ok());
+    }
+
+    #[test]
+    fn test_create_wallet_request_validation_invalid_label_empty() {
+        let request = CreateWalletRequest {
+            label: "".to_string(),
+            mnemonic_length: Some(12),
+        };
+        let result = request.validate();
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.field_errors().contains_key("label"));
+    }
+
+    #[test]
+    fn test_create_wallet_request_validation_invalid_label_too_long() {
+        let request = CreateWalletRequest {
+            label: "a".repeat(101),
+            mnemonic_length: Some(12),
+        };
+        let result = request.validate();
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.field_errors().contains_key("label"));
+    }
+
+    #[test]
+    fn test_create_wallet_request_validation_invalid_mnemonic_length() {
+        let request = CreateWalletRequest {
+            label: "Test".to_string(),
+            mnemonic_length: Some(15), // Invalid: not 12 or 24
+        };
+        let result = request.validate();
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.field_errors().contains_key("mnemonic_length"));
+    }
+
+    #[test]
+    fn test_pagination_query_defaults() {
+        // Test default_page function
+        assert_eq!(default_page(), 1);
+        // Test default_per_page function  
+        assert_eq!(default_per_page(), 20);
+    }
+
+    #[test]
+    fn test_wallet_response_from_master_wallet() {
+        use chrono::Utc;
+        use uuid::Uuid;
+
+        let wallet = crate::db::MasterWallet {
+            id: Uuid::new_v4(),
+            label: "Test Wallet".to_string(),
+            encrypted_phrase: "encrypted_data".to_string(),
+            created_at: Utc::now(),
+        };
+
+        let response: WalletResponse = wallet.into();
+        assert_eq!(response.label, "Test Wallet");
+        // encrypted_phrase should not be in response (marked with #[serde(skip_serializing)])
+    }
+
+    #[test]
+    fn test_pagination_calculation() {
+        // Test pagination math
+        let total = 100i64;
+        let per_page = 20i64;
+        let total_pages = (total + per_page - 1) / per_page;
+        assert_eq!(total_pages, 5);
+
+        let total = 95i64;
+        let total_pages = (total + per_page - 1) / per_page;
+        assert_eq!(total_pages, 5);
+
+        let total = 101i64;
+        let total_pages = (total + per_page - 1) / per_page;
+        assert_eq!(total_pages, 6);
+    }
 }

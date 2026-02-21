@@ -28,14 +28,14 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or(false);
         
         if !allow_unauthenticated {
-            tracing::error!("❌ API key is not configured!");
-            tracing::error!("❌ Set APP__SERVER__API_KEY environment variable to start the service.");
-            tracing::error!("❌ Or set ALLOW_UNAUTHENTICATED=true to explicitly allow unauthenticated access (NOT RECOMMENDED FOR PRODUCTION).");
+            tracing::error!("API key is not configured!");
+            tracing::error!("Set APP__SERVER__API_KEY environment variable to start the service.");
+            tracing::error!("Or set ALLOW_UNAUTHENTICATED=true to explicitly allow unauthenticated access (NOT RECOMMENDED FOR PRODUCTION).");
             panic!("API key is required. Set APP__SERVER__API_KEY or ALLOW_UNAUTHENTICATED=true");
         }
         
-        tracing::warn!("⚠️  SECURITY WARNING: Running without API key authentication!");
-        tracing::warn!("⚠️  This is NOT recommended for production environments.");
+        tracing::warn!("SECURITY WARNING: Running without API key authentication!");
+        tracing::warn!("This is NOT recommended for production environments.");
     }
 
     // Connect to DB with configurable pool options
@@ -75,6 +75,10 @@ async fn main() -> anyhow::Result<()> {
     // Build router
     let app = create_router(state.clone());
 
+    // Create shutdown channel for coordinated shutdown
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    let shutdown_tx = Arc::new(std::sync::Mutex::new(shutdown_tx));
+
     // gRPC server
     let grpc_service = crypto_wallets_service::api::MyWalletService {
         state: state.clone(),
@@ -98,6 +102,12 @@ async fn main() -> anyhow::Result<()> {
         rate_limit_config,
     );
 
+    // gRPC shutdown signal
+    let grpc_shutdown = async move {
+        let _ = shutdown_rx.changed().await;
+        tracing::info!("gRPC server received shutdown signal");
+    };
+
     let grpc_server = tonic::transport::Server::builder()
         .add_service(
             crypto_wallets_service::api::grpc::wallet_service_server::WalletServiceServer::with_interceptor(
@@ -105,30 +115,61 @@ async fn main() -> anyhow::Result<()> {
                 grpc_interceptor,
             ),
         )
-        .serve_with_shutdown(grpc_addr, shutdown_signal());
+        .serve_with_shutdown(grpc_addr, grpc_shutdown);
 
     // HTTP server
     let http_addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.server.port));
     tracing::info!("HTTP Server listening on {}", http_addr);
 
     let listener = tokio::net::TcpListener::bind(http_addr).await?;
+    
+    // HTTP shutdown signal
+    let mut http_shutdown_rx = shutdown_tx.lock().unwrap().subscribe();
+    let http_shutdown = async move {
+        let _ = http_shutdown_rx.changed().await;
+        tracing::info!("HTTP server received shutdown signal");
+    };
+    
     let http_server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal());
+    .with_graceful_shutdown(http_shutdown);
 
-    // Run both with graceful shutdown
-    tokio::select! {
-        res = http_server => {
-            tracing::info!("HTTP server exited");
-            res.map_err(anyhow::Error::from)
-        }
-        res = grpc_server => {
-            tracing::info!("gRPC server exited");
-            res.map_err(anyhow::Error::from)
-        }
-    }?;
+    // Spawn both servers
+    let http_handle = tokio::spawn(async move {
+        http_server.await
+    });
+    let grpc_handle = tokio::spawn(async move {
+        grpc_server.await
+    });
+
+    // Wait for shutdown signal
+    shutdown_signal().await;
+    
+    // Signal both servers to shut down
+    tracing::info!("Broadcasting shutdown signal to all servers...");
+    let _ = shutdown_tx.lock().unwrap().send(true);
+
+    // Wait for both servers with timeout
+    let shutdown_timeout = Duration::from_secs(30);
+    
+    let http_result = tokio::time::timeout(shutdown_timeout, http_handle).await;
+    let grpc_result = tokio::time::timeout(shutdown_timeout, grpc_handle).await;
+
+    match http_result {
+        Ok(Ok(Ok(_))) => tracing::info!("HTTP server shut down gracefully"),
+        Ok(Ok(Err(e))) => tracing::error!("HTTP server error: {}", e),
+        Ok(Err(e)) => tracing::error!("HTTP server panicked: {}", e),
+        Err(_) => tracing::warn!("HTTP server shutdown timed out"),
+    }
+
+    match grpc_result {
+        Ok(Ok(Ok(_))) => tracing::info!("gRPC server shut down gracefully"),
+        Ok(Ok(Err(e))) => tracing::error!("gRPC server error: {}", e),
+        Ok(Err(e)) => tracing::error!("gRPC server panicked: {}", e),
+        Err(_) => tracing::warn!("gRPC server shutdown timed out"),
+    }
 
     tracing::info!("Graceful shutdown complete");
     Ok(())

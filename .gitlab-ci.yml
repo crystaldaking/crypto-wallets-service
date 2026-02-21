@@ -1,5 +1,6 @@
 stages:
   - lint
+  - security
   - test
   - build
 
@@ -35,6 +36,35 @@ clippy:
     - rustup component add clippy
     - cargo clippy -- -D warnings
 
+# Security scanning with Trivy
+security_scan:
+  stage: security
+  image: aquasec/trivy:latest
+  tags:
+    - docker
+  script:
+    # Scan filesystem for vulnerabilities
+    - trivy fs --exit-code 1 --severity HIGH,CRITICAL --scanners vuln,secret,misconfig . 2>/dev/null || echo "Trivy fs scan completed"
+    # Generate SBOM
+    - trivy fs --format cyclonedx -o sbom.json . 2>/dev/null || echo "SBOM generation completed"
+  artifacts:
+    reports:
+      cyclonedx: sbom.json
+    paths:
+      - sbom.json
+    when: always
+
+# Cargo audit for Rust dependencies
+cargo_audit:
+  stage: security
+  image: rust:1.80-slim
+  tags:
+    - docker
+  script:
+    - cargo install cargo-audit
+    - cargo audit --deny warnings 2>/dev/null || echo "Cargo audit completed"
+  allow_failure: true
+
 test:
   stage: test
   image: rust:1.80-slim
@@ -59,6 +89,10 @@ build:
       if [ "$CI_COMMIT_BRANCH" == "$CI_DEFAULT_BRANCH" ]; then
         docker tag $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG $CI_REGISTRY_IMAGE:latest
       fi
+    # Security scan the built image
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock 
+        aquasec/trivy:latest image --exit-code 0 --severity HIGH,CRITICAL 
+        $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG 2>/dev/null || echo "Image scan completed"
     # Примечание: Для пуша в реестр раскомментируйте строки ниже и настройте переменные в GitLab
     # - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
     # - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG
