@@ -118,12 +118,19 @@ async fn main() -> anyhow::Result<()> {
     )
     .with_graceful_shutdown(shutdown_signal());
 
-    // Run both
+    // Run both with graceful shutdown
     tokio::select! {
-        res = http_server => res.map_err(anyhow::Error::from),
-        res = grpc_server => res.map_err(anyhow::Error::from),
+        res = http_server => {
+            tracing::info!("HTTP server exited");
+            res.map_err(anyhow::Error::from)
+        }
+        res = grpc_server => {
+            tracing::info!("gRPC server exited");
+            res.map_err(anyhow::Error::from)
+        }
     }?;
 
+    tracing::info!("Graceful shutdown complete");
     Ok(())
 }
 
@@ -146,9 +153,17 @@ async fn shutdown_signal() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
+        _ = ctrl_c => {
+            tracing::info!("Received Ctrl+C, starting graceful shutdown...");
+        }
+        _ = terminate => {
+            tracing::info!("Received SIGTERM, starting graceful shutdown...");
+        }
     }
 
-    tracing::info!("Shutdown signal received");
+    // Allow 30 seconds for graceful shutdown
+    tokio::time::timeout(Duration::from_secs(30), async {
+        // Give servers time to finish processing requests
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }).await.ok();
 }
