@@ -117,11 +117,50 @@ impl fmt::Debug for VaultConfig {
     }
 }
 
+#[derive(Deserialize, Clone)]
+pub struct RedisConfig {
+    pub url: String,
+    #[serde(default = "default_redis_ttl_secs")]
+    pub ttl_secs: u64,
+    #[serde(default = "default_redis_enabled")]
+    pub enabled: bool,
+}
+
+impl Default for RedisConfig {
+    fn default() -> Self {
+        Self {
+            url: "redis://127.0.0.1:6379".to_string(),
+            ttl_secs: 3600,
+            enabled: false,
+        }
+    }
+}
+
+impl fmt::Debug for RedisConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RedisConfig")
+            .field("url", &"[REDACTED]")
+            .field("ttl_secs", &self.ttl_secs)
+            .field("enabled", &self.enabled)
+            .finish()
+    }
+}
+
+fn default_redis_ttl_secs() -> u64 {
+    3600
+}
+
+fn default_redis_enabled() -> bool {
+    false
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub vault: VaultConfig,
+    #[serde(default)]
+    pub redis: RedisConfig,
 }
 
 impl AppConfig {

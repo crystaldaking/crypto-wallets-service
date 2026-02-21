@@ -321,6 +321,8 @@ use utoipa_swagger_ui::SwaggerUi;
 #[openapi(
     paths(
         health_check,
+        liveness_check,
+        readiness_check,
         create_wallet,
         list_wallets,
         get_address,
@@ -330,7 +332,8 @@ use utoipa_swagger_ui::SwaggerUi;
         schemas(CreateWalletRequest, SignTxRequest, WalletResponse, PaginatedWalletsResponse, crate::db::DerivedAddress)
     ),
     tags(
-        (name = "wallets", description = "Wallet management endpoints")
+        (name = "wallets", description = "Wallet management endpoints"),
+        (name = "health", description = "Health check endpoints for Kubernetes")
     )
 )]
 pub struct ApiDoc;
@@ -370,6 +373,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     let public_routes = Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .route("/api/v1/health", get(health_check))
+        .route("/api/v1/health/live", get(liveness_check))
+        .route("/api/v1/health/ready", get(readiness_check))
         .route("/metrics", get(|| async move { metric_handle.render() }));
 
     public_routes
@@ -471,6 +476,96 @@ async fn health_check(State(state): State<Arc<AppState>>) -> (StatusCode, Json<s
                 "database": db_status,
                 "vault": vault_status,
                 "vault_circuit_state": circuit_state,
+            }
+        })),
+    )
+}
+
+/// Liveness probe for Kubernetes
+/// Returns 200 if the service is running (doesn't check dependencies)
+#[utoipa::path(
+    get,
+    path = "/api/v1/health/live",
+    responses(
+        (status = 200, description = "Service is alive"),
+        (status = 500, description = "Service is not alive")
+    )
+)]
+async fn liveness_check() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "alive",
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        })),
+    )
+}
+
+/// Readiness probe for Kubernetes
+/// Returns 200 only if all dependencies are ready (DB, Vault, Redis if enabled)
+#[utoipa::path(
+    get,
+    path = "/api/v1/health/ready",
+    responses(
+        (status = 200, description = "Service is ready"),
+        (status = 503, description = "Service is not ready")
+    )
+)]
+async fn readiness_check(State(state): State<Arc<AppState>>) -> (StatusCode, Json<serde_json::Value>) {
+    let start_time = std::time::Instant::now();
+    
+    // Check database
+    let db_start = std::time::Instant::now();
+    let (db_status, db_latency_ms) = match state.db.health_check().await {
+        Ok(_) => ("ok", db_start.elapsed().as_millis() as u64),
+        Err(e) => {
+            tracing::error!("Readiness check failed - Database error: {}", e);
+            ("error", db_start.elapsed().as_millis() as u64)
+        }
+    };
+
+    // Check Vault circuit state
+    let vault_start = std::time::Instant::now();
+    let circuit_state = state.vault.circuit_state().await;
+    let (vault_status, vault_latency_ms) = if circuit_state == "open" {
+        ("degraded", vault_start.elapsed().as_millis() as u64)
+    } else {
+        match state.vault.encrypt(b"health_check").await {
+            Ok(_) => ("ok", vault_start.elapsed().as_millis() as u64),
+            Err(crate::vault::VaultError::CircuitOpen) => ("degraded", vault_start.elapsed().as_millis() as u64),
+            Err(e) => {
+                tracing::error!("Readiness check failed - Vault error: {}", e);
+                ("error", vault_start.elapsed().as_millis() as u64)
+            }
+        }
+    };
+
+    let total_latency_ms = start_time.elapsed().as_millis() as u64;
+
+    // Service is ready if DB is OK and Vault is at least degraded (not error)
+    let is_ready = db_status == "ok" && vault_status != "error";
+    let status_code = if is_ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    (
+        status_code,
+        Json(serde_json::json!({
+            "ready": is_ready,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "latency_ms": total_latency_ms,
+            "components": {
+                "database": {
+                    "status": db_status,
+                    "latency_ms": db_latency_ms,
+                },
+                "vault": {
+                    "status": vault_status,
+                    "circuit_state": circuit_state,
+                    "latency_ms": vault_latency_ms,
+                },
             }
         })),
     )
