@@ -1,6 +1,6 @@
 [package]
 name = "crypto-wallets-service"
-version = "0.3.0"
+version = "1.0.7"
 edition = "2024"
 
 [dependencies]
