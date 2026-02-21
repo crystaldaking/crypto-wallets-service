@@ -90,6 +90,46 @@ pub fn check_auth_interceptor(
     }
 }
 
+use crate::config::RateLimitConfig;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+/// Combined interceptor for auth and rate limiting
+pub fn combined_interceptor(
+    auth_interceptor: impl Fn(TonicRequest<()>) -> Result<TonicRequest<()>, Status> + Clone + Send + 'static,
+    rate_limit_config: Option<RateLimitConfig>,
+) -> impl Fn(TonicRequest<()>) -> Result<TonicRequest<()>, Status> + Clone + Send + 'static {
+    let request_count = Arc::new(AtomicU64::new(0));
+    let last_reset = Arc::new(std::sync::Mutex::new(Instant::now()));
+    
+    move |req: TonicRequest<()>| {
+        // First check auth
+        let req = auth_interceptor(req)?;
+        
+        // Then check rate limit if enabled
+        if let Some(ref config) = rate_limit_config {
+            let mut last_reset = last_reset.lock().unwrap();
+            let now = Instant::now();
+            
+            // Reset counter every second
+            if now.duration_since(*last_reset) >= Duration::from_secs(1) {
+                request_count.store(0, Ordering::Relaxed);
+                *last_reset = now;
+            }
+            
+            let count = request_count.fetch_add(1, Ordering::Relaxed);
+            
+            // Check if over limit (burst_size as max per second)
+            if count >= config.requests_per_second as u64 {
+                tracing::warn!("gRPC: Rate limit exceeded");
+                return Err(Status::resource_exhausted("Rate limit exceeded"));
+            }
+        }
+        
+        Ok(req)
+    }
+}
+
 pub struct MyWalletService {
     pub state: Arc<AppState>,
 }
