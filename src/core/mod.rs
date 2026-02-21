@@ -5,8 +5,14 @@ use alloy::signers::local::PrivateKeySigner;
 use coins_bip32::path::DerivationPath;
 use coins_bip32::prelude::{SigningKey, XPriv};
 use coins_bip39::{English, Mnemonic};
+use lru::LruCache;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::num::NonZeroUsize;
 use std::str::FromStr;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use zeroize::Zeroize;
 
 use std::fmt;
@@ -32,7 +38,7 @@ impl From<String> for Address {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Network {
     Ethereum,
     Tron,
@@ -63,13 +69,60 @@ impl Network {
     }
 }
 
+/// Cache key for derived addresses
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct AddressCacheKey {
+    encrypted_seed_hash: u64,
+    network: Network,
+    index: u32,
+}
+
 pub struct WalletManager {
     vault: VaultClient,
+    /// LRU cache for derived addresses to avoid repeated computation
+    address_cache: Arc<RwLock<LruCache<AddressCacheKey, Address>>>,
 }
 
 impl WalletManager {
+    /// Default cache size for derived addresses
+    const DEFAULT_CACHE_SIZE: usize = 1000;
+
     pub fn new(vault: VaultClient) -> Self {
-        Self { vault }
+        let cache = LruCache::new(
+            NonZeroUsize::new(Self::DEFAULT_CACHE_SIZE).unwrap()
+        );
+        
+        Self {
+            vault,
+            address_cache: Arc::new(RwLock::new(cache)),
+        }
+    }
+
+    /// Create with custom cache size
+    pub fn with_cache_size(vault: VaultClient, cache_size: usize) -> Self {
+        let cache_size = std::cmp::max(1, cache_size);
+        let cache = LruCache::new(
+            NonZeroUsize::new(cache_size).unwrap()
+        );
+        
+        Self {
+            vault,
+            address_cache: Arc::new(RwLock::new(cache)),
+        }
+    }
+
+    /// Get cache statistics for monitoring
+    pub async fn cache_stats(&self) -> (usize, usize) {
+        let cache = self.address_cache.read().await;
+        let cap = cache.cap().get();
+        let len = cache.len();
+        (len, cap)
+    }
+
+    /// Clear the address cache
+    pub async fn clear_cache(&self) {
+        let mut cache = self.address_cache.write().await;
+        cache.clear();
     }
 
     pub fn generate_mnemonic(length: usize) -> anyhow::Result<String> {
@@ -84,12 +137,42 @@ impl WalletManager {
         network: Network,
         index: u32,
     ) -> anyhow::Result<Address> {
+        // Compute hash of encrypted_seed for cache key
+        let mut hasher = DefaultHasher::new();
+        encrypted_seed.hash(&mut hasher);
+        let encrypted_seed_hash = hasher.finish();
+        
+        let cache_key = AddressCacheKey {
+            encrypted_seed_hash,
+            network,
+            index,
+        };
+
+        // Try to get from cache first (need write lock for get since it updates LRU)
+        {
+            let mut cache = self.address_cache.write().await;
+            if let Some(cached_address) = cache.get(&cache_key) {
+                tracing::debug!("Address cache hit for {:?} index {}", network, index);
+                return Ok(cached_address.clone());
+            }
+        }
+
+        // Cache miss - derive the address
+        tracing::debug!("Address cache miss for {:?} index {}", network, index);
         let mut seed_bytes = self.vault.decrypt(encrypted_seed).await?;
         let mnemonic =
             Mnemonic::<English>::new_from_phrase(&String::from_utf8(seed_bytes.clone())?)?;
         seed_bytes.zeroize();
 
-        Self::derive_address_from_mnemonic(&mnemonic, network, index)
+        let address = Self::derive_address_from_mnemonic(&mnemonic, network, index)?;
+
+        // Store in cache
+        {
+            let mut cache = self.address_cache.write().await;
+            cache.put(cache_key, address.clone());
+        }
+
+        Ok(address)
     }
 
     // Extracted for testing without Vault
