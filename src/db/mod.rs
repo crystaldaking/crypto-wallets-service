@@ -61,12 +61,6 @@ impl DbClient {
         .await
     }
 
-    pub async fn get_wallets(&self) -> Result<Vec<MasterWallet>, sqlx::Error> {
-        sqlx::query_as::<_, MasterWallet>("SELECT * FROM master_wallets")
-            .fetch_all(&self.pool)
-            .await
-    }
-
     /// Get wallets with pagination
     pub async fn get_wallets_paginated(
         &self,
