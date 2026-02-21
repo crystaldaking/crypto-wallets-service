@@ -1,0 +1,32 @@
+# Job for running database migrations
+# Run this BEFORE deploying the application
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: crypto-wallets-service:v1.0.8
+          command: 
+            - sh
+            - -c
+            - |
+              # Note: This requires implementing a migration subcommand
+              # For now, migrations run automatically on startup
+              echo "Migrations should be run via init container or separate job"
+              exit 0
+          env:
+            - name: APP__DATABASE__URL
+              valueFrom:
+                secretKeyRef:
+                  name: wallet-service-secrets
+                  key: database-url
+      # Alternative: Use init container in deployment to wait for migrations

@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crypto-wallets-service
+  labels:
+    app: crypto-wallets-service
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: crypto-wallets-service
+  template:
+    metadata:
+      labels:
+        app: crypto-wallets-service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: app
+          image: crypto-wallets-service:v1.0.8
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+            - name: grpc
+              containerPort: 3001
+              protocol: TCP
+          
+          # Liveness probe - basic check
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health/live
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          # Readiness probe - checks dependencies
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          
+          # Graceful shutdown
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+          
+          env:
+            - name: RUST_LOG
+              value: "info"
+            - name: APP__SERVER__API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wallet-service-secrets
+                  key: api-key
+                  optional: false
+            - name: APP__DATABASE__URL
+              valueFrom:
+                secretKeyRef:
+                  name: wallet-service-secrets
+                  key: database-url
+                  optional: false
+            - name: APP__VAULT__ADDRESS
+              valueFrom:
+                configMapKeyRef:
+                  name: wallet-service-config
+                  key: vault-address
+            - name: APP__VAULT__TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: wallet-service-secrets
+                  key: vault-token
+                  optional: false
+            - name: APP__VAULT__KEY_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: wallet-service-config
+                  key: vault-key-id
+            - name: APP__REDIS__URL
+              valueFrom:
+                configMapKeyRef:
+                  name: wallet-service-config
+                  key: redis-url
+            - name: APP__REDIS__ENABLED
+              value: "true"
+            - name: APP__REDIS__TTL_SECS
+              value: "3600"
+          
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "1000m"
+      
+      terminationGracePeriodSeconds: 35
