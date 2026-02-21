@@ -10,6 +10,8 @@ This is a high-performance, secure microservice for generating, storing, and sig
 - **HD Wallet Generation**: BIP-32/39/44 hierarchical deterministic wallets
 - **Secure Key Management**: Mnemonics encrypted via HashiCorp Vault Transit Engine
 - **Transaction Signing**: Sign transactions without exposing private keys
+- **Redis Caching**: Two-layer caching (in-memory LRU + Redis) for derived addresses
+- **Kubernetes Ready**: Liveness and readiness probes for K8s deployments
 
 ### Architecture Components
 
@@ -31,12 +33,12 @@ This is a high-performance, secure microservice for generating, storing, and sig
 │         (WalletManager - mnemonic derivation)               │
 └───────────────────────┬─────────────────────────────────────┘
                         │
-        ┌───────────────┴───────────────┐
-        │                               │
-┌───────▼────────┐            ┌─────────▼──────────┐
-│   PostgreSQL   │            │   HashiCorp Vault  │
-│  (wallet data) │            │ (encryption keys)  │
-└────────────────┘            └────────────────────┘
+        ┌───────────────┬───────────────┐
+        │               │               │
+┌───────▼──────┐ ┌──────▼──────┐ ┌─────▼──────────┐
+│  PostgreSQL  │ │    Redis    │ │ HashiCorp Vault│
+│ (wallet data)│ │ (address cache)│ (encryption) │
+└──────────────┘ └─────────────┘ └────────────────┘
 ```
 
 ## Technology Stack
@@ -50,6 +52,7 @@ This is a high-performance, secure microservice for generating, storing, and sig
 | Database | PostgreSQL | 15+ |
 | ORM/Migrations | SQLx | 0.8 |
 | Encryption | HashiCorp Vault | 1.21+ |
+| Cache | Redis | 7+ |
 | Crypto Libraries | alloy, coins-bip32/39, ed25519-dalek, tonlib-core | various |
 | API Documentation | Utoipa (OpenAPI/Swagger) | 4.x |
 | Metrics | Prometheus (axum-prometheus) | 0.6 |
@@ -72,13 +75,15 @@ crypto-wallets-service/
 │   ├── config.rs           # Configuration management (env vars + TOML)
 │   ├── auth.rs             # Authentication utilities (IP extraction, etc.)
 │   ├── api/
-│   │   └── mod.rs          # HTTP/gRPC handlers, routing, middleware
+│   │   └── mod.rs          # HTTP/gRPC handlers, routing, middleware, K8s probes
 │   ├── core/
-│   │   └── mod.rs          # WalletManager, Network enum, crypto logic
+│   │   └── mod.rs          # WalletManager, Network enum, crypto logic, caching
 │   ├── db/
 │   │   └── mod.rs          # Database client, models (MasterWallet, etc.)
-│   └── vault/
-│       └── mod.rs          # Vault client (encrypt/decrypt with retry)
+│   ├── vault/
+│   │   └── mod.rs          # Vault client (encrypt/decrypt with retry)
+│   └── redis/
+│       └── mod.rs          # Redis cache client with ConnectionManager
 │
 ├── proto/
 │   └── wallet.proto        # gRPC service definitions
@@ -184,6 +189,9 @@ Configuration uses a layered approach:
 | `APP__DATABASE__ACQUIRE_TIMEOUT_SECS` | `5` | Connection acquire timeout |
 | `ALLOW_UNAUTHENTICATED` | `false` | Set to `true` to disable auth (dev only!) |
 | `RUST_LOG` | `info` | Log level filter |
+| `APP__REDIS__URL` | - | Redis connection URL |
+| `APP__REDIS__ENABLED` | `false` | Enable Redis caching |
+| `APP__REDIS__TTL_SECS` | `3600` | Default cache TTL in seconds |
 
 ### Development Setup Example
 
@@ -199,6 +207,9 @@ export APP__SERVER__API_KEY=my-dev-key
 export APP__DATABASE__URL="postgres://postgres:postgres@localhost:5432/crypto_wallets"
 export APP__VAULT__ADDRESS="http://localhost:8200"
 export APP__VAULT__TOKEN="root"
+export APP__REDIS__URL="redis://127.0.0.1:6379"
+export APP__REDIS__ENABLED=true
+export APP__REDIS__TTL_SECS=3600
 cargo run
 ```
 
@@ -208,7 +219,9 @@ cargo run
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| GET | `/api/v1/health` | No | Health check (DB + Vault status) |
+| GET | `/api/v1/health` | No | Health check (DB + Vault + Redis status) |
+| GET | `/api/v1/health/live` | No | Kubernetes liveness probe |
+| GET | `/api/v1/health/ready` | No | Kubernetes readiness probe |
 | GET | `/swagger-ui` | No | Swagger UI documentation |
 | GET | `/metrics` | No | Prometheus metrics |
 | POST | `/api/v1/wallets` | Yes | Create new wallet |
@@ -258,12 +271,15 @@ pub enum Network {
 
 pub struct WalletManager {
     vault: VaultClient,
+    address_cache: Arc<RwLock<LruCache<AddressCacheKey, Address>>>,
+    redis_client: Option<CacheClient>,
 }
 
 impl WalletManager {
     pub fn generate_mnemonic(length: usize) -> anyhow::Result<String>;
     pub async fn get_address(&self, encrypted_seed: &str, network: Network, index: u32) -> anyhow::Result<Address>;
     pub async fn sign_tx(&self, encrypted_seed: &str, network: Network, index: u32, unsigned_tx: &str) -> anyhow::Result<String>;
+    fn generate_cache_key(&self, encrypted_seed: &str, network: Network, index: u32) -> String;
 }
 
 // src/db/mod.rs
@@ -284,6 +300,24 @@ pub struct VaultClient {
     token: String,
     key_id: String,
     client: reqwest::Client,
+}
+
+impl VaultClient {
+    pub async fn encrypt(&self, data: &[u8]) -> Result<String, VaultError>;
+    pub async fn decrypt(&self, ciphertext: &str) -> Result<Vec<u8>, VaultError>;
+}
+
+// src/redis/mod.rs
+pub struct CacheClient {
+    connection: ConnectionManager,
+    default_ttl: u64,
+}
+
+impl CacheClient {
+    pub async fn new(redis_url: &str, default_ttl: u64) -> Result<Self, CacheError>;
+    pub async fn get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>, CacheError>;
+    pub async fn set<T: Serialize>(&self, key: &str, value: &T, ttl: Option<u64>) -> Result<(), CacheError>;
+    pub async fn delete(&self, key: &str) -> Result<(), CacheError>;
 }
 
 impl VaultClient {
@@ -320,12 +354,15 @@ cargo test --test integration_test
 Integration test flow:
 1. Starts PostgreSQL container
 2. Starts Vault container with transit engine
-3. Runs database migrations
-4. Tests full API workflow:
-   - Health check
+3. Starts Redis container (for cache testing)
+4. Runs database migrations
+5. Tests full API workflow:
+   - Health check (DB + Vault + Redis)
+   - Kubernetes probes (liveness/readiness)
    - Unauthorized request rejection
    - Wallet creation
    - Address derivation
+   - Redis caching
 
 ### Adding a New Network
 
@@ -335,6 +372,52 @@ Integration test flow:
 4. **Signing Logic**: Add case in `WalletManager::sign_tx()`
 5. **Validation**: Update `validate_transaction_format()`
 6. **API Support**: Update network string mapping in `src/api/mod.rs`
+
+## Caching Strategy
+
+The service implements a two-layer caching system for derived addresses:
+
+### Layer 1: In-Memory LRU Cache
+- **Capacity**: 1000 entries
+- **Purpose**: Fast lookups for hot addresses
+- **Scope**: Single instance only (not shared)
+- **Implementation**: `LruCache<AddressCacheKey, Address>` with `Arc<RwLock<>>`
+
+### Layer 2: Redis Cache
+- **TTL**: Configurable (default 3600 seconds)
+- **Purpose**: Shared cache across multiple service instances
+- **Key Format**: `wallet:{wallet_id}:{network}:{index}`
+- **Serialization**: JSON
+- **Implementation**: `CacheClient` with `redis::aio::ConnectionManager`
+
+### Cache Flow (get_address)
+
+```
+1. Check in-memory LRU cache
+   ↓ Hit → Return address
+   ↓ Miss
+2. Check Redis (if enabled)
+   ↓ Hit → Store in LRU → Return address
+   ↓ Miss
+3. Derive from mnemonic via Vault
+4. Store in both caches → Return address
+```
+
+### Cache Configuration
+
+```bash
+# Enable Redis caching
+export APP__REDIS__URL=redis://127.0.0.1:6379
+export APP__REDIS__ENABLED=true
+export APP__REDIS__TTL_SECS=3600
+```
+
+### Redis Client Features
+
+- **Connection pooling** via `ConnectionManager`
+- **Automatic reconnection** on connection loss
+- **JSON serialization** for all cached values
+- **Configurable TTL** per key or default
 
 ## Security Considerations
 
@@ -477,6 +560,21 @@ curl http://localhost:8200/v1/sys/health
 
 # Re-initialize
 make down && make up
+```
+
+**Redis connection errors:**
+```bash
+# Check Redis status
+docker-compose ps redis
+
+# Test Redis connection
+docker exec -it crypto-wallets-service-redis-1 redis-cli ping
+
+# View cached keys
+docker exec -it crypto-wallets-service-redis-1 redis-cli keys '*'
+
+# Restart Redis
+docker-compose restart redis
 ```
 
 **Integration tests fail:**
