@@ -21,7 +21,7 @@ run:
 	@sleep 2
 	@echo "Starting Crypto Wallets Service..."
 	APP__SERVER__API_KEY=dev-local-key-change-in-production \
-	APP__DATABASE__URL=postgres://postgres:postgres@localhost:5432/wallets \
+	APP__DATABASE__URL=postgres://postgres:postgres@localhost:5432/crypto_wallets \
 	APP__VAULT__ADDRESS=http://localhost:8200 \
 	APP__VAULT__TOKEN=root \
 	APP__VAULT__KEY_ID=wallet-master-key \
@@ -52,7 +52,7 @@ fmt:
 run-dev:
 	@echo "Starting with development defaults..."
 	APP__SERVER__API_KEY=dev-local-key-change-in-production \
-	APP__DATABASE__URL=postgres://postgres:postgres@localhost:5432/wallets \
+	APP__DATABASE__URL=postgres://postgres:postgres@localhost:5432/crypto_wallets \
 	APP__VAULT__ADDRESS=http://localhost:8200 \
 	APP__VAULT__TOKEN=root \
 	APP__VAULT__KEY_ID=wallet-master-key \
@@ -67,5 +67,5 @@ env-check:
 	@echo ""
 	@echo "Default development credentials:"
 	@echo "  API Key: dev-local-key-change-in-production"
-	@echo "  Database: postgres://postgres:postgres@localhost:5432/wallets"
+	@echo "  Database: postgres://postgres:postgres@localhost:5432/crypto_wallets"
 	@echo "  Vault: http://localhost:8200 (token: root)"
