@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.8] - 2026-02-21
+
+### Infrastructure
+- Add Redis caching support with configurable TTL
+  - Cache derived addresses with Redis (migrating from in-memory LRU)
+  - Cache health check status
+  - Connection pooling with ConnectionManager
+  - Optional Redis (can be disabled via config)
+
+### Kubernetes Ready
+- Add liveness probe endpoint: `/api/v1/health/live`
+- Add readiness probe endpoint: `/api/v1/health/ready`
+- Extended health check with latency metrics for all components
+- Service is ready only when all dependencies are healthy
+
 ## [1.0.7] - 2026-02-21
 
 ### Security
