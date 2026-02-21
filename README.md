@@ -120,6 +120,81 @@ export APP__VAULT__TOKEN="root"
 *   **Get Address**: `GET /api/v1/wallets/{id}/address/{network}?index=0`
 *   **Sign Transaction**: `POST /api/v1/wallets/{id}/sign`
 
+## 🗄 Database Schema
+
+### Tables
+
+#### `master_wallets`
+Stores wallet metadata with encrypted mnemonic phrases.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID (PK) | Unique wallet identifier |
+| `label` | TEXT | Human-readable wallet name |
+| `encrypted_phrase` | TEXT | Mnemonic encrypted by Vault Transit |
+| `created_at` | TIMESTAMPTZ | Creation timestamp |
+
+#### `derived_addresses`
+Cached derived addresses for each network and index.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID (PK) | Unique address identifier |
+| `wallet_id` | UUID (FK) | Reference to master_wallets |
+| `network` | TEXT | Blockchain network (eth, tron, sol, ton) |
+| `address_index` | INTEGER | HD wallet derivation index |
+| `address` | TEXT | Derived blockchain address |
+| `created_at` | TIMESTAMPTZ | Creation timestamp |
+
+**Indexes:**
+- `idx_derived_addresses_wallet_id` — Lookup by wallet
+- `idx_derived_addresses_address` — Resolve address to wallet
+- `idx_derived_addresses_wallet_network_index` — Composite for derivation queries
+
+#### `audit_logs`
+Security audit trail for all sensitive operations.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID (PK) | Unique log entry identifier |
+| `action` | VARCHAR(50) | Operation type (create_wallet, sign_transaction) |
+| `wallet_id` | UUID (FK, nullable) | Affected wallet |
+| `status` | VARCHAR(20) | success / failed |
+| `ip_address` | VARCHAR(45) | Client IP address |
+| `details` | JSONB | Additional context (error messages, network, etc.) |
+| `created_at` | TIMESTAMPTZ | Event timestamp |
+
+**Indexes:**
+- `idx_audit_logs_wallet_id` — Wallet history queries
+- `idx_audit_logs_created_at` — Time-range queries
+
+### Entity Relationship Diagram
+
+```
+┌─────────────────────┐       ┌──────────────────────┐
+│   master_wallets    │       │  derived_addresses   │
+├─────────────────────┤       ├──────────────────────┤
+│ PK id               │──┐    │ PK id                │
+│    label            │  │    │ FK wallet_id         │──┐
+│    encrypted_phrase │  └───>│    network           │  │
+│    created_at       │       │    address_index     │  │
+└─────────────────────┘       │    address           │  │
+         │                    │    created_at        │  │
+         │                    └──────────────────────┘  │
+         │                                              │
+         │    ┌──────────────────────┐                  │
+         └───>│     audit_logs       │<─────────────────┘
+              ├──────────────────────┤
+              │ PK id                │
+              │    action            │
+              │ FK wallet_id (nullable)
+              │    status            │
+              │    ip_address        │
+              │    details (JSONB)   │
+              │    created_at        │
+              └──────────────────────┘
+```
+
 ## 👨‍💻 Developer Guide
 
 ### Adding a New Network
