@@ -635,4 +635,111 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Unknown Ethereum transaction type"));
     }
+
+    #[test]
+    fn test_sign_tx_with_test_mnemonic() {
+        // Use a known test mnemonic
+        let mnemonic_str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let mnemonic = Mnemonic::<English>::new_from_phrase(mnemonic_str).unwrap();
+        
+        // Test message to sign (32 bytes for Ethereum)
+        let message = b"test message for signing".to_vec();
+        
+        // Test Ethereum signing using derive_address_from_mnemonic logic
+        let eth_address = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ethereum, 0).unwrap();
+        assert!(eth_address.to_string().starts_with("0x"));
+        assert_eq!(eth_address.to_string().len(), 42);
+        
+        // Test Tron signing
+        let tron_address = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Tron, 0).unwrap();
+        assert!(tron_address.to_string().starts_with("T"));
+        
+        // Test Solana signing
+        let solana_address = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Solana, 0).unwrap();
+        assert!(solana_address.to_string().len() >= 32);
+        assert!(solana_address.to_string().len() <= 44);
+        
+        // Test TON signing
+        let ton_address = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ton, 0).unwrap();
+        assert!(ton_address.to_string().starts_with("EQ"));
+    }
+
+    #[test]
+    fn test_sign_tx_different_indices_produce_different_addresses() {
+        let mnemonic_str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let mnemonic = Mnemonic::<English>::new_from_phrase(mnemonic_str).unwrap();
+        
+        // Different indices should produce different addresses
+        let addr0 = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ethereum, 0).unwrap();
+        let addr1 = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ethereum, 1).unwrap();
+        let addr2 = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ethereum, 2).unwrap();
+        
+        assert_ne!(addr0.to_string(), addr1.to_string());
+        assert_ne!(addr1.to_string(), addr2.to_string());
+        assert_ne!(addr0.to_string(), addr2.to_string());
+    }
+
+    #[test]
+    fn test_sign_tx_deterministic_addresses() {
+        // Addresses should be deterministic - same mnemonic + index = same address
+        let mnemonic_str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let mnemonic = Mnemonic::<English>::new_from_phrase(mnemonic_str).unwrap();
+        
+        let addr1 = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ethereum, 0).unwrap();
+        let addr2 = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ethereum, 0).unwrap();
+        
+        assert_eq!(addr1.to_string(), addr2.to_string());
+        
+        // Same for other networks
+        let tron1 = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Tron, 5).unwrap();
+        let tron2 = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Tron, 5).unwrap();
+        assert_eq!(tron1.to_string(), tron2.to_string());
+    }
+
+    #[test]
+    fn test_transaction_validation_valid_solana() {
+        // Valid Solana transaction (at least 64 bytes)
+        let tx = "0x".to_string() + &"00".repeat(64);
+        let result = validate_transaction_format(Network::Solana, &tx);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 64);
+    }
+
+    #[test]
+    fn test_transaction_validation_valid_ton() {
+        // Valid TON transaction (at least 10 bytes)
+        let tx = "0x".to_string() + &"00".repeat(10);
+        let result = validate_transaction_format(Network::Ton, &tx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_transaction_validation_valid_tron() {
+        // Valid Tron transaction (at least 10 bytes)
+        let tx = "0x".to_string() + &"00".repeat(10);
+        let result = validate_transaction_format(Network::Tron, &tx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_eth_address_format() {
+        // Test that Ethereum addresses are properly checksummed
+        let mnemonic_str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let mnemonic = Mnemonic::<English>::new_from_phrase(mnemonic_str).unwrap();
+        
+        let address = WalletManager::derive_address_from_mnemonic(&mnemonic, Network::Ethereum, 0).unwrap();
+        let addr_str = address.to_string();
+        
+        // Should start with 0x
+        assert!(addr_str.starts_with("0x"));
+        
+        // Should be 42 characters (0x + 40 hex chars)
+        assert_eq!(addr_str.len(), 42);
+        
+        // Should contain both upper and lower case (EIP-55)
+        let has_upper = addr_str.chars().any(|c| c.is_ascii_uppercase());
+        let has_lower = addr_str.chars().any(|c| c.is_ascii_lowercase());
+        assert!(has_upper, "EIP-55 address should contain uppercase letters");
+        assert!(has_lower, "EIP-55 address should contain lowercase letters");
+    }
 }

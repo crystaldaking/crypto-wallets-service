@@ -371,6 +371,67 @@ async fn full_integration_test() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
+    // K. Test transaction signing (Ethereum)
+    let ethereum_tx = format!("0x02{}", "00".repeat(100));
+    
+    let sign_request = serde_json::json!({
+        "network": "eth",
+        "index": 0,
+        "unsigned_tx": ethereum_tx
+    });
+    
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/wallets/{}/sign", wallet_id))
+                .header("Content-Type", "application/json")
+                .header("X-Api-Key", "test-secret-key")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1234))))
+                .body(Body::from(sign_request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    
+    assert_eq!(response.status(), StatusCode::OK, "Transaction signing should succeed");
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_json: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let signed_tx = body_json["signed_tx"].as_str().unwrap();
+    
+    // Signed transaction should be a valid hex string starting with 0x
+    assert!(signed_tx.starts_with("0x"), "Signed tx should start with 0x");
+    assert!(signed_tx.len() > 10, "Signed tx should have reasonable length");
+    println!("Successfully signed Ethereum transaction: {}", &signed_tx[..50]);
+
+    // L. Test signing with invalid transaction format
+    let invalid_sign_request = serde_json::json!({
+        "network": "eth",
+        "index": 0,
+        "unsigned_tx": "0xinvalid"
+    });
+    
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/wallets/{}/sign", wallet_id))
+                .header("Content-Type", "application/json")
+                .header("X-Api-Key", "test-secret-key")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1234))))
+                .body(Body::from(invalid_sign_request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    
+    // Should fail due to invalid transaction format
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
     println!("Integration test passed!");
 }
 

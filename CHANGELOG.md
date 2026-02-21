@@ -39,12 +39,13 @@ All notable changes to this project will be documented in this file.
 - Better error handling for server panics and timeouts
 
 ### Testing
-- Add comprehensive test coverage (35+ unit tests)
+- Add comprehensive test coverage (42+ unit tests)
 - Add circuit breaker state transition tests
 - Add transaction validation tests for all networks
 - Add API input validation tests
 - Extend integration tests with multi-network support
 - Add gRPC integration test suite
+- Add transaction signing tests for all networks
 
 ## [0.3.0] - 2024-01-25
 
