@@ -54,12 +54,12 @@ impl Network {
     /// 
     /// EIP-55: Mixed-case checksum address encoding
     /// https://eips.ethereum.org/EIPS/eip-55
-    fn to_checksum_address(address: &str) -> String {
+    fn to_checksum_address(address: &str) -> anyhow::Result<String> {
         // Parse address using alloy and convert to checksum format
         let alloy_addr = AlloyAddress::parse_checksummed(address, None)
             .or_else(|_| AlloyAddress::from_str(address))
-            .unwrap_or_else(|_| panic!("Invalid Ethereum address: {}", address));
-        alloy_addr.to_checksum(None)
+            .map_err(|e| anyhow::anyhow!("Invalid Ethereum address: {}", e))?;
+        Ok(alloy_addr.to_checksum(None))
     }
 }
 
@@ -113,7 +113,7 @@ impl WalletManager {
                 ))?;
                 let address = signer.address().to_string();
                 // Apply EIP-55 checksum encoding
-                let checksum_address = Network::to_checksum_address(&address);
+                let checksum_address = Network::to_checksum_address(&address)?;
                 Ok(Address::new(checksum_address))
             }
             Network::Tron => {
@@ -384,30 +384,30 @@ mod tests {
         
         // All caps input -> mixed case output
         assert_eq!(
-            Network::to_checksum_address("0x52908400098527886e0f7030069857d2e4169ee7"),
+            Network::to_checksum_address("0x52908400098527886e0f7030069857d2e4169ee7").unwrap(),
             "0x52908400098527886E0F7030069857D2E4169EE7"
         );
         
         // All lower input -> mixed case output
         assert_eq!(
-            Network::to_checksum_address("0x8617e340b3d01fa5f11f306f4090fd50e238070d"),
+            Network::to_checksum_address("0x8617e340b3d01fa5f11f306f4090fd50e238070d").unwrap(),
             "0x8617E340B3D01FA5F11F306F4090FD50E238070D"
         );
         
         // Already checksummed should remain the same
         assert_eq!(
-            Network::to_checksum_address("0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"),
+            Network::to_checksum_address("0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed").unwrap(),
             "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
         );
         
         // Without 0x prefix
         assert_eq!(
-            Network::to_checksum_address("52908400098527886e0f7030069857d2e4169ee7"),
+            Network::to_checksum_address("52908400098527886e0f7030069857d2e4169ee7").unwrap(),
             "0x52908400098527886E0F7030069857D2E4169EE7"
         );
         
         // Test that result is not all lowercase (contains some uppercase)
-        let result = Network::to_checksum_address("0x52908400098527886e0f7030069857d2e4169ee7");
+        let result = Network::to_checksum_address("0x52908400098527886e0f7030069857d2e4169ee7").unwrap();
         assert!(result.chars().any(|c| c.is_ascii_uppercase() && c.is_ascii_alphabetic()));
     }
 }
