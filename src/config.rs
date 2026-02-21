@@ -47,9 +47,24 @@ pub struct DatabaseConfig {
     pub url: String,
     /// Maximum number of connections in the pool
     /// Default: 20 (suitable for production workloads)
-    /// For high-load systems, consider 50+ connections
     #[serde(default = "default_pool_size")]
     pub pool_size: u32,
+    /// Minimum number of connections to maintain in the pool
+    /// Default: 5
+    #[serde(default = "default_min_connections")]
+    pub min_connections: u32,
+    /// Maximum lifetime of a connection in seconds
+    /// Default: 600 (10 minutes)
+    #[serde(default = "default_max_lifetime")]
+    pub max_lifetime_secs: u64,
+    /// Idle timeout before closing connection in seconds
+    /// Default: 300 (5 minutes)
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout_secs: u64,
+    /// Timeout for acquiring a connection from the pool in seconds
+    /// Default: 5 seconds
+    #[serde(default = "default_acquire_timeout")]
+    pub acquire_timeout_secs: u64,
 }
 
 impl fmt::Debug for DatabaseConfig {
@@ -57,12 +72,32 @@ impl fmt::Debug for DatabaseConfig {
         f.debug_struct("DatabaseConfig")
             .field("url", &"[REDACTED]")
             .field("pool_size", &self.pool_size)
+            .field("min_connections", &self.min_connections)
+            .field("max_lifetime_secs", &self.max_lifetime_secs)
+            .field("idle_timeout_secs", &self.idle_timeout_secs)
+            .field("acquire_timeout_secs", &self.acquire_timeout_secs)
             .finish()
     }
 }
 
 fn default_pool_size() -> u32 {
     20
+}
+
+fn default_min_connections() -> u32 {
+    5
+}
+
+fn default_max_lifetime() -> u64 {
+    600 // 10 minutes
+}
+
+fn default_idle_timeout() -> u64 {
+    300 // 5 minutes
+}
+
+fn default_acquire_timeout() -> u64 {
+    5 // 5 seconds
 }
 
 #[derive(Deserialize, Clone)]

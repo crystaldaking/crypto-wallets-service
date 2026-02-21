@@ -99,6 +99,7 @@ async fn full_integration_test() {
     let config = config::AppConfig {
         server: config::ServerConfig {
             port: 0,
+            grpc_port: None, // Will use port + 1
             api_key: Some("test-secret-key".to_string()),
             rate_limit: config::RateLimitConfig {
                 enabled: true,
@@ -110,6 +111,10 @@ async fn full_integration_test() {
         database: config::DatabaseConfig {
             url: db_url.clone(),
             pool_size: 5, // Smaller pool for tests
+            min_connections: 1,
+            max_lifetime_secs: 60,
+            idle_timeout_secs: 30,
+            acquire_timeout_secs: 3,
         },
         vault: config::VaultConfig {
             address: vault_addr.clone(),

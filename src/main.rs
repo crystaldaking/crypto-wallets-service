@@ -5,6 +5,7 @@ use crypto_wallets_service::db::DbClient;
 use crypto_wallets_service::vault::VaultClient;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -37,12 +38,21 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("⚠️  This is NOT recommended for production environments.");
     }
 
-    // Connect to DB with configurable pool size
+    // Connect to DB with configurable pool options
     let pool = PgPoolOptions::new()
         .max_connections(config.database.pool_size)
+        .min_connections(config.database.min_connections)
+        .max_lifetime(Duration::from_secs(config.database.max_lifetime_secs))
+        .idle_timeout(Duration::from_secs(config.database.idle_timeout_secs))
+        .acquire_timeout(Duration::from_secs(config.database.acquire_timeout_secs))
         .connect(&config.database.url)
         .await?;
-    tracing::info!("Database pool initialized with {} connections", config.database.pool_size);
+    tracing::info!(
+        "Database pool initialized: min={}, max={}, acquire_timeout={}s",
+        config.database.min_connections,
+        config.database.pool_size,
+        config.database.acquire_timeout_secs
+    );
 
     // Run migrations
     sqlx::migrate!("./migrations").run(&pool).await?;
