@@ -72,16 +72,27 @@ async fn main() -> anyhow::Result<()> {
     let grpc_addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.server.grpc_port()));
     tracing::info!("gRPC Server listening on {}", grpc_addr);
 
-    // Create interceptor for auth
+    // Create interceptor for auth and rate limiting
     let auth_interceptor = crypto_wallets_service::api::check_auth_interceptor(
         state.config.server.api_key.clone(),
+    );
+    
+    // Combine auth and rate limiting
+    let rate_limit_config = if config.server.rate_limit.enabled {
+        Some(config.server.rate_limit.clone())
+    } else {
+        None
+    };
+    let grpc_interceptor = crypto_wallets_service::api::combined_interceptor(
+        auth_interceptor,
+        rate_limit_config,
     );
 
     let grpc_server = tonic::transport::Server::builder()
         .add_service(
             crypto_wallets_service::api::grpc::wallet_service_server::WalletServiceServer::with_interceptor(
                 grpc_service,
-                auth_interceptor,
+                grpc_interceptor,
             ),
         )
         .serve_with_shutdown(grpc_addr, shutdown_signal());
