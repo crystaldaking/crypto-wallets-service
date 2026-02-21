@@ -8,17 +8,22 @@ A high-performance, secure microservice for generating, storing, and signing cry
 *   **Security First**:
     *   Mnemonics are encrypted using **Transit Engine** in HashiCorp Vault.
     *   No plaintext keys stored in the database.
+    *   Constant-time API key comparison (timing attack protection).
+    *   Mandatory API key authentication (with explicit opt-out for development).
+    *   Secrets redacted from logs (`[REDACTED]`).
 *   **HD Wallets**: Hierarchical Deterministic wallet generation (BIP-32/39/44).
 *   **Observability**:
     *   Prometheus Metrics (`/metrics`).
     *   Structured Logging with `X-Request-ID` tracing.
+    *   Audit Logs for all sensitive actions.
 *   **Documentation**:
     *   Swagger UI (`/swagger-ui`).
     *   Postman Collection included.
 *   **Reliability**:
     *   Rate Limiting (Governor).
-    *   Audit Logs for sensitive actions.
+    *   Pagination for large datasets.
     *   Comprehensive Integration Tests with Testcontainers.
+    *   Database connection pooling with configurable size.
 
 ## 🛠 Architecture
 
@@ -32,6 +37,14 @@ A high-performance, secure microservice for generating, storing, and signing cry
 
 *   Rust 1.80+
 *   Docker & Docker Compose
+*   Protocol Buffers compiler (`protoc`):
+    ```bash
+    # macOS
+    brew install protobuf
+    
+    # Debian/Ubuntu
+    apt install protobuf-compiler
+    ```
 
 ### Running Locally
 
@@ -42,7 +55,16 @@ A high-performance, secure microservice for generating, storing, and signing cry
     This starts Postgres (5432) and a self-configuring Vault (8200). 
     *Note: Vault is automatically initialized with the transit engine and master key via `docker/vault-init.sh`.*
 
-2.  **Run the Service**:
+2.  **Set API Key** (required for production):
+    ```bash
+    export APP__SERVER__API_KEY=your-secret-key-here
+    ```
+    Or for development only (NOT for production):
+    ```bash
+    export ALLOW_UNAUTHENTICATED=true
+    ```
+
+3.  **Run the Service**:
     ```bash
     make run
     ```
@@ -64,21 +86,38 @@ A high-performance, secure microservice for generating, storing, and signing cry
 *   **gRPC Proto**: Definitions available in `proto/wallet.proto`.
 *   **Postman**: Import `postman_collection.json` for manual testing.
 
-Configuration is handled via `config/default.toml` or Environment Variables.
+## ⚙️ Configuration
+
+Configuration is handled via Environment Variables (prefix: `APP__`, separator: `__`).
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `SERVER.HOST` | `127.0.0.1` | Bind address |
-| `SERVER.PORT` | `3000` | Port to listen on |
-| `DATABASE.URL` | `postgres://...` | DB Connection String |
-| `VAULT.URL` | `http://127.0.0.1:8200` | Vault Address |
-| `VAULT.TOKEN` | `root` | Vault Token |
+| `APP__SERVER__PORT` | `3000` | HTTP port to listen on |
+| `APP__SERVER__GRPC_PORT` | `3001` | gRPC port (defaults to port + 1) |
+| `APP__SERVER__API_KEY` | *required* | API key for authentication |
+| `APP__DATABASE__URL` | — | PostgreSQL connection string |
+| `APP__DATABASE__POOL_SIZE` | `20` | Database connection pool size |
+| `APP__VAULT__ADDRESS` | `http://127.0.0.1:8200` | Vault Address |
+| `APP__VAULT__TOKEN` | `root` | Vault Token |
+| `APP__VAULT__KEY_ID` | `wallet-master-key` | Transit encryption key name |
 
-## 📖 API Documentation
+### Example
 
-*   **Swagger UI**: Open `http://localhost:3000/swagger-ui` in your browser.
+```bash
+export APP__SERVER__PORT=3000
+export APP__SERVER__API_KEY=super-secret-key
+export APP__DATABASE__URL="postgres://user:pass@localhost:5432/wallets"
+export APP__DATABASE__POOL_SIZE=50
+export APP__VAULT__ADDRESS="http://127.0.0.1:8200"
+export APP__VAULT__TOKEN="root"
+```
+
+## 📝 API Endpoints
+
 *   **Health Check**: `GET /api/v1/health`
 *   **Create Wallet**: `POST /api/v1/wallets`
+*   **List Wallets** (paginated): `GET /api/v1/wallets?page=1&per_page=20`
+*   **Get Address**: `GET /api/v1/wallets/{id}/address/{network}?index=0`
 *   **Sign Transaction**: `POST /api/v1/wallets/{id}/sign`
 
 ## 👨‍💻 Developer Guide
@@ -86,9 +125,9 @@ Configuration is handled via `config/default.toml` or Environment Variables.
 ### Adding a New Network
 
 1.  **Update Enum**: Add the network to `src/core/mod.rs` (`enum Network`).
-2.  **Derivation Logic**: Implement the derivation path in `src/core/wallet.rs` (`get_derivation_path`).
-3.  **Address Formatting**: Implement address encoding in `src/core/address.rs`.
-4.  **Signing Logic**: Add signing support in `sign_tx` function.
+2.  **Derivation Logic**: Implement the derivation path in `Network::derivation_path()`.
+3.  **Address Formatting**: Implement address encoding in `WalletManager::derive_address_from_mnemonic()`.
+4.  **Signing Logic**: Add signing support in `WalletManager::sign_tx()` function.
 
 ### Running Tests
 
@@ -109,14 +148,12 @@ Configuration is handled via `config/default.toml` or Environment Variables.
 The project includes a `.gitlab-ci.yml` file for automated linting, testing, and building. 
 
 **Required GitLab Variables:**
-- `CI_REGISTRY_USER`: Your GitLab Container Registry username (usually provided by GitLab).
-- `CI_REGISTRY_PASSWORD`: Your GitLab Container Registry password/token (usually provided by GitLab).
-- `CI_REGISTRY`: The address of the registry (usually provided by GitLab).
+- `CI_REGISTRY_USER`: Your GitLab Container Registry username
+- `CI_REGISTRY_PASSWORD`: Your GitLab Container Registry password/token
+- `CI_REGISTRY`: The address of the registry
 
 **Note on Runners:**
 The CI/CD pipeline is configured to use runners with the `docker` tag. Ensure your GitLab runners have this tag enabled.
-
-To enable automatic pushing of images, uncomment the `docker login` and `docker push` lines in `.gitlab-ci.yml`.
 
 ### Docker
 
@@ -125,17 +162,29 @@ Build the production image:
 docker build -f docker/prod.Dockerfile -t crypto-wallets-service:latest .
 ```
 
-Run with env vars:
+**Important**: Production image does NOT contain development configuration. You MUST provide all configuration via environment variables:
+
 ```bash
-docker run -p 3000:3000 -e DATABASE_URL=... -e VAULT_URL=... crypto-wallets-service:latest
+docker run -p 3000:3000 \
+  -e APP__SERVER__API_KEY=your-secret-key \
+  -e APP__DATABASE__URL=postgres://... \
+  -e APP__VAULT__ADDRESS=http://vault:8200 \
+  -e APP__VAULT__TOKEN=... \
+  crypto-wallets-service:latest
 ```
 
 ## 🔒 Security Notes
 
+*   **API Key is mandatory** - Service will not start without `APP__SERVER__API_KEY` unless `ALLOW_UNAUTHENTICATED=true` is explicitly set (dev only).
 *   Ensure Vault is sealed and running in production mode for real deployments.
 *   Rotate the `VAULT_TOKEN` regularly.
-*   Use TLS for all connections (Database, Vault, HTTP).
+*   Use TLS for all connections (Database, Vault, HTTP) in production.
+*   All secrets are redacted from logs (`[REDACTED]`).
 
 ## 📄 License
 
 MIT
+
+---
+
+**Version 1.0.5** - See [CHANGELOG.md](CHANGELOG.md) for release notes.
