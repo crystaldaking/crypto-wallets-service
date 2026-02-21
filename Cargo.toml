@@ -62,6 +62,7 @@ lru = "0.16.3"
 tonic-build = "0.12"
 
 [dev-dependencies]
+portpicker = "0.1.1"
 testcontainers = "0.26.3"
 testcontainers-modules = { version = "0.14.0", features = ["postgres"] }
 tokio = { version = "1", features = ["test-util"] }

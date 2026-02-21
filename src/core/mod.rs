@@ -322,7 +322,7 @@ impl WalletManager {
 
 /// Validates transaction format for the given network
 /// Returns decoded bytes or an error if format is invalid
-fn validate_transaction_format(network: Network, unsigned_tx: &str) -> anyhow::Result<Vec<u8>> {
+pub fn validate_transaction_format(network: Network, unsigned_tx: &str) -> anyhow::Result<Vec<u8>> {
     // Remove optional 0x prefix
     let hex_str = unsigned_tx.trim_start_matches("0x");
     
@@ -506,5 +506,133 @@ mod tests {
         // Test that result is not all lowercase (contains some uppercase)
         let result = Network::to_checksum_address("0x52908400098527886e0f7030069857d2e4169ee7").unwrap();
         assert!(result.chars().any(|c| c.is_ascii_uppercase() && c.is_ascii_alphabetic()));
+    }
+
+    #[test]
+    fn test_address_cache_key_hashing() {
+        // Test that AddressCacheKey implements Hash correctly
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        let key1 = AddressCacheKey {
+            encrypted_seed_hash: 12345,
+            network: Network::Ethereum,
+            index: 0,
+        };
+        
+        let key2 = AddressCacheKey {
+            encrypted_seed_hash: 12345,
+            network: Network::Ethereum,
+            index: 0,
+        };
+        
+        let key3 = AddressCacheKey {
+            encrypted_seed_hash: 12345,
+            network: Network::Solana,
+            index: 0,
+        };
+        
+        // Same keys should have same hash
+        let mut hasher1 = DefaultHasher::new();
+        key1.hash(&mut hasher1);
+        let hash1 = hasher1.finish();
+        
+        let mut hasher2 = DefaultHasher::new();
+        key2.hash(&mut hasher2);
+        let hash2 = hasher2.finish();
+        
+        assert_eq!(hash1, hash2);
+        
+        // Different networks should have different hashes
+        let mut hasher3 = DefaultHasher::new();
+        key3.hash(&mut hasher3);
+        let hash3 = hasher3.finish();
+        
+        assert_ne!(hash1, hash3);
+    }
+
+    #[test]
+    fn test_network_hash_impl() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        let networks = vec![
+            Network::Ethereum,
+            Network::Tron,
+            Network::Solana,
+            Network::Ton,
+        ];
+        
+        let mut hashes = std::collections::HashSet::new();
+        
+        for network in networks {
+            let mut hasher = DefaultHasher::new();
+            network.hash(&mut hasher);
+            let hash = hasher.finish();
+            // All networks should have unique hashes
+            assert!(hashes.insert(hash), "Duplicate hash found for {:?}", network);
+        }
+    }
+
+    #[test]
+    fn test_transaction_validation_empty() {
+        let result = validate_transaction_format(Network::Ethereum, "");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty"));
+    }
+
+    #[test]
+    fn test_transaction_validation_odd_length() {
+        let result = validate_transaction_format(Network::Ethereum, "0xabc");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("odd length"));
+    }
+
+    #[test]
+    fn test_transaction_validation_invalid_hex() {
+        let result = validate_transaction_format(Network::Ethereum, "0xGGGG");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("non-hex"));
+    }
+
+    #[test]
+    fn test_transaction_validation_ethereum_legacy_too_short() {
+        // Legacy transaction should be at least 45 bytes
+        let short_tx = "0xc0".to_string() + &"00".repeat(10);
+        let result = validate_transaction_format(Network::Ethereum, &short_tx);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too short"));
+    }
+
+    #[test]
+    fn test_transaction_validation_ethereum_eip1559() {
+        // Valid EIP-1559 transaction (type 0x02)
+        let tx = "0x02".to_string() + &"00".repeat(100);
+        let result = validate_transaction_format(Network::Ethereum, &tx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_transaction_validation_ethereum_eip2930() {
+        // Valid EIP-2930 transaction (type 0x01)
+        let tx = "0x01".to_string() + &"00".repeat(100);
+        let result = validate_transaction_format(Network::Ethereum, &tx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_transaction_validation_solana_too_short() {
+        let short_tx = "0x".to_string() + &"00".repeat(30);
+        let result = validate_transaction_format(Network::Solana, &short_tx);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too short"));
+    }
+
+    #[test]
+    fn test_transaction_validation_unknown_type() {
+        let tx = "0x05".to_string() + &"00".repeat(100);
+        let result = validate_transaction_format(Network::Ethereum, &tx);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown Ethereum transaction type"));
     }
 }

@@ -835,3 +835,109 @@ async fn sign_transaction(
         "signed_tx": signed_tx
     })))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use validator::Validate;
+
+    #[test]
+    fn test_create_wallet_request_validation_valid() {
+        let request = CreateWalletRequest {
+            label: "My Wallet".to_string(),
+            mnemonic_length: Some(12),
+        };
+        assert!(request.validate().is_ok());
+
+        let request24 = CreateWalletRequest {
+            label: "Test".to_string(),
+            mnemonic_length: Some(24),
+        };
+        assert!(request24.validate().is_ok());
+
+        // Default (None) is also valid
+        let request_default = CreateWalletRequest {
+            label: "Test".to_string(),
+            mnemonic_length: None,
+        };
+        assert!(request_default.validate().is_ok());
+    }
+
+    #[test]
+    fn test_create_wallet_request_validation_invalid_label_empty() {
+        let request = CreateWalletRequest {
+            label: "".to_string(),
+            mnemonic_length: Some(12),
+        };
+        let result = request.validate();
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.field_errors().contains_key("label"));
+    }
+
+    #[test]
+    fn test_create_wallet_request_validation_invalid_label_too_long() {
+        let request = CreateWalletRequest {
+            label: "a".repeat(101),
+            mnemonic_length: Some(12),
+        };
+        let result = request.validate();
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.field_errors().contains_key("label"));
+    }
+
+    #[test]
+    fn test_create_wallet_request_validation_invalid_mnemonic_length() {
+        let request = CreateWalletRequest {
+            label: "Test".to_string(),
+            mnemonic_length: Some(15), // Invalid: not 12 or 24
+        };
+        let result = request.validate();
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.field_errors().contains_key("mnemonic_length"));
+    }
+
+    #[test]
+    fn test_pagination_query_defaults() {
+        // Test default_page function
+        assert_eq!(default_page(), 1);
+        // Test default_per_page function  
+        assert_eq!(default_per_page(), 20);
+    }
+
+    #[test]
+    fn test_wallet_response_from_master_wallet() {
+        use chrono::Utc;
+        use uuid::Uuid;
+
+        let wallet = crate::db::MasterWallet {
+            id: Uuid::new_v4(),
+            label: "Test Wallet".to_string(),
+            encrypted_phrase: "encrypted_data".to_string(),
+            created_at: Utc::now(),
+        };
+
+        let response: WalletResponse = wallet.into();
+        assert_eq!(response.label, "Test Wallet");
+        // encrypted_phrase should not be in response (marked with #[serde(skip_serializing)])
+    }
+
+    #[test]
+    fn test_pagination_calculation() {
+        // Test pagination math
+        let total = 100i64;
+        let per_page = 20i64;
+        let total_pages = (total + per_page - 1) / per_page;
+        assert_eq!(total_pages, 5);
+
+        let total = 95i64;
+        let total_pages = (total + per_page - 1) / per_page;
+        assert_eq!(total_pages, 5);
+
+        let total = 101i64;
+        let total_pages = (total + per_page - 1) / per_page;
+        assert_eq!(total_pages, 6);
+    }
+}

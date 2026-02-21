@@ -17,7 +17,7 @@ pub enum VaultError {
 
 /// Circuit breaker states
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum CircuitState {
+pub enum CircuitState {
     /// Normal operation, requests pass through
     Closed,
     /// Failure threshold reached, requests are rejected
@@ -48,7 +48,8 @@ impl Default for CircuitBreakerConfig {
 }
 
 /// Circuit breaker for Vault operations
-struct CircuitBreaker {
+#[derive(Debug)]
+pub struct CircuitBreaker {
     state: CircuitState,
     failure_count: u32,
     success_count: u32,
@@ -57,7 +58,7 @@ struct CircuitBreaker {
 }
 
 impl CircuitBreaker {
-    fn new(config: CircuitBreakerConfig) -> Self {
+    pub fn new(config: CircuitBreakerConfig) -> Self {
         Self {
             state: CircuitState::Closed,
             failure_count: 0,
@@ -68,7 +69,7 @@ impl CircuitBreaker {
     }
 
     /// Check if request can proceed
-    fn can_execute(&mut self) -> bool {
+    pub fn can_execute(&mut self) -> bool {
         match self.state {
             CircuitState::Closed => true,
             CircuitState::Open => {
@@ -91,7 +92,7 @@ impl CircuitBreaker {
     }
 
     /// Record a successful operation
-    fn record_success(&mut self) {
+    pub fn record_success(&mut self) {
         match self.state {
             CircuitState::Closed => {
                 self.failure_count = 0;
@@ -114,7 +115,7 @@ impl CircuitBreaker {
     }
 
     /// Record a failed operation
-    fn record_failure(&mut self) {
+    pub fn record_failure(&mut self) {
         self.failure_count += 1;
         self.last_failure_time = Some(Instant::now());
 
@@ -139,7 +140,7 @@ impl CircuitBreaker {
     }
 
     /// Get current state for metrics/monitoring
-    fn state(&self) -> CircuitState {
+    pub fn state(&self) -> CircuitState {
         self.state
     }
 }
@@ -414,5 +415,116 @@ impl VaultClient {
             CircuitState::Open => "open",
             CircuitState::HalfOpen => "half_open",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_circuit_breaker_closed_state_allows_execution() {
+        let mut cb = CircuitBreaker::new(CircuitBreakerConfig::default());
+        
+        assert!(cb.can_execute());
+        assert_eq!(cb.state(), CircuitState::Closed);
+    }
+
+    #[test]
+    fn test_circuit_breaker_opens_after_failures() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 3,
+            recovery_timeout_secs: 30,
+            success_threshold: 2,
+        };
+        let mut cb = CircuitBreaker::new(config);
+        
+        // Record failures up to threshold
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Closed);
+        
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Closed);
+        
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Open);
+        
+        // Should not allow execution when open
+        assert!(!cb.can_execute());
+    }
+
+    #[test]
+    fn test_circuit_breaker_resets_on_success() {
+        let mut cb = CircuitBreaker::new(CircuitBreakerConfig::default());
+        
+        cb.record_failure();
+        assert_eq!(cb.failure_count, 1);
+        
+        cb.record_success();
+        assert_eq!(cb.failure_count, 0);
+        assert_eq!(cb.state(), CircuitState::Closed);
+    }
+
+    #[test]
+    fn test_circuit_breaker_half_open_transitions() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 1,
+            recovery_timeout_secs: 0, // Immediate recovery for testing
+            success_threshold: 2,
+        };
+        let mut cb = CircuitBreaker::new(config);
+        
+        // Open the circuit
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Open);
+        
+        // Should enter half-open after recovery timeout
+        assert!(cb.can_execute()); // This checks and transitions to half-open
+        assert_eq!(cb.state(), CircuitState::HalfOpen);
+        
+        // Record successes to close the circuit
+        cb.record_success();
+        assert_eq!(cb.state(), CircuitState::HalfOpen);
+        
+        cb.record_success();
+        assert_eq!(cb.state(), CircuitState::Closed);
+    }
+
+    #[test]
+    fn test_circuit_breaker_reopens_on_half_open_failure() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 1,
+            recovery_timeout_secs: 0,
+            success_threshold: 2,
+        };
+        let mut cb = CircuitBreaker::new(config);
+        
+        // Open the circuit
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Open);
+        
+        // Enter half-open
+        assert!(cb.can_execute());
+        assert_eq!(cb.state(), CircuitState::HalfOpen);
+        
+        // Failure in half-open should reopen
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Open);
+    }
+
+    #[test]
+    fn test_retry_config_default() {
+        let config = RetryConfig::default();
+        assert_eq!(config.max_retries, 3);
+        assert_eq!(config.base_delay_ms, 100);
+        assert_eq!(config.max_delay_ms, 5000);
+    }
+
+    #[test]
+    fn test_circuit_breaker_config_default() {
+        let config = CircuitBreakerConfig::default();
+        assert_eq!(config.failure_threshold, 5);
+        assert_eq!(config.recovery_timeout_secs, 30);
+        assert_eq!(config.success_threshold, 3);
     }
 }
