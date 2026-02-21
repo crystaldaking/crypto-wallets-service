@@ -129,6 +129,11 @@ async fn full_integration_test() {
             token: "root".to_string(),
             key_id: "master-key".to_string(),
         },
+        redis: config::RedisConfig {
+            url: "redis://127.0.0.1:6379".to_string(),
+            ttl_secs: 3600,
+            enabled: false, // Disable Redis for integration tests
+        },
     };
 
     // 4. Setup DB & Migrations
@@ -533,6 +538,11 @@ async fn grpc_integration_test() {
             address: vault_addr.clone(),
             token: "root".to_string(),
             key_id: "master-key".to_string(),
+        },
+        redis: config::RedisConfig {
+            url: "redis://127.0.0.1:6379".to_string(),
+            ttl_secs: 3600,
+            enabled: false, // Disable Redis for integration tests
         },
     };
 
