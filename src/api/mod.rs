@@ -6,7 +6,7 @@ use crate::vault::VaultClient;
 use subtle::ConstantTimeEq;
 use axum::{
     Json, Router,
-    extract::{Path, Query, Request, State},
+    extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::Response as AxumResponse,
@@ -15,6 +15,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
+use validator::{Validate, ValidationError};
 
 pub struct AppState {
     pub db: DbClient,
@@ -23,9 +24,19 @@ pub struct AppState {
     pub config: AppConfig, // Added config to state
 }
 
-#[derive(Serialize, Deserialize, ToSchema)]
+fn validate_mnemonic_length(length: usize) -> Result<(), ValidationError> {
+    if length == 12 || length == 24 {
+        Ok(())
+    } else {
+        Err(ValidationError::new("mnemonic_length must be 12 or 24"))
+    }
+}
+
+#[derive(Serialize, Deserialize, ToSchema, Validate)]
 pub struct CreateWalletRequest {
+    #[validate(length(min = 1, max = 100, message = "Label must be between 1 and 100 characters"))]
     pub label: String,
+    #[validate(custom(function = "validate_mnemonic_length"))]
     pub mnemonic_length: Option<usize>,
 }
 
@@ -141,6 +152,13 @@ impl WalletService for MyWalletService {
         request: TonicRequest<GrpcCreateWalletRequest>,
     ) -> Result<TonicResponse<WalletInfo>, Status> {
         let req = request.into_inner();
+        
+        // Validate label length
+        if req.label.is_empty() || req.label.len() > 100 {
+            return Err(Status::invalid_argument(
+                "Label must be between 1 and 100 characters",
+            ));
+        }
         
         // Validate mnemonic length (same as HTTP endpoint)
         let length = req.mnemonic_length.unwrap_or(12) as usize;
@@ -328,7 +346,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     let mut protected_routes = Router::new()
         .route("/api/v1/wallets", post(create_wallet).get(list_wallets))
         .route("/api/v1/wallets/:id/address/:network", get(get_address))
-        .route("/api/v1/wallets/:id/sign", post(sign_transaction));
+        .route("/api/v1/wallets/:id/sign", post(sign_transaction))
+        .layer(DefaultBodyLimit::max(1024 * 1024)); // 1MB body limit
 
     if rate_limit_conf.enabled {
         let governor_conf = Arc::new(
@@ -460,13 +479,24 @@ async fn create_wallet(
 ) -> Result<Json<WalletResponse>, (axum::http::StatusCode, String)> {
     tracing::info!("Received create_wallet request: label={}", payload.label);
 
-    let length = payload.mnemonic_length.unwrap_or(12);
-    if length != 12 && length != 24 {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "Mnemonic length must be 12 or 24".to_string(),
-        ));
+    // Validate request
+    if let Err(errors) = payload.validate() {
+        let error_msg = errors
+            .field_errors()
+            .iter()
+            .map(|(field, errs)| {
+                let messages: Vec<String> = errs
+                    .iter()
+                    .filter_map(|e| e.message.as_ref().map(|m| m.to_string()))
+                    .collect();
+                format!("{}: {}", field, messages.join(", "))
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err((axum::http::StatusCode::BAD_REQUEST, error_msg));
     }
+
+    let length = payload.mnemonic_length.unwrap_or(12);
 
     tracing::info!("Generating mnemonic...");
     let mnemonic = WalletManager::generate_mnemonic(length).map_err(|e: anyhow::Error| {
