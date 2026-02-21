@@ -320,7 +320,8 @@ impl VaultClient {
     }
 
     pub async fn encrypt(&self, data: &[u8]) -> Result<String, VaultError> {
-        self.with_circuit_breaker(
+        let start = Instant::now();
+        let result = self.with_circuit_breaker(
             || async {
                 self.with_retry(
                     || async { self.encrypt_internal(data).await },
@@ -328,7 +329,14 @@ impl VaultClient {
                 ).await
             },
             "Vault encrypt",
-        ).await
+        ).await;
+        
+        // Record duration metric
+        let duration = start.elapsed().as_secs_f64();
+        let status = if result.is_ok() { "success" } else { "error" };
+        metrics::histogram!("vault_operations_duration_seconds", "operation" => "encrypt", "status" => status).record(duration);
+        
+        result
     }
 
     async fn encrypt_internal(&self, data: &[u8]) -> Result<String, VaultError> {
@@ -354,7 +362,8 @@ impl VaultClient {
     }
 
     pub async fn decrypt(&self, ciphertext: &str) -> Result<Vec<u8>, VaultError> {
-        self.with_circuit_breaker(
+        let start = Instant::now();
+        let result = self.with_circuit_breaker(
             || async {
                 self.with_retry(
                     || async { self.decrypt_internal(ciphertext).await },
@@ -362,7 +371,14 @@ impl VaultClient {
                 ).await
             },
             "Vault decrypt",
-        ).await
+        ).await;
+        
+        // Record duration metric
+        let duration = start.elapsed().as_secs_f64();
+        let status = if result.is_ok() { "success" } else { "error" };
+        metrics::histogram!("vault_operations_duration_seconds", "operation" => "decrypt", "status" => status).record(duration);
+        
+        result
     }
 
     async fn decrypt_internal(&self, ciphertext: &str) -> Result<Vec<u8>, VaultError> {

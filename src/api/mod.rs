@@ -572,6 +572,9 @@ async fn create_wallet(
         .await
         .map_err(|e| tracing::error!("Failed to write audit log: {}", e));
 
+    // Record metrics
+    metrics::counter!("wallets_created_total").increment(1);
+    
     tracing::info!("create_wallet completed successfully");
     Ok(Json(WalletResponse::from(wallet)))
 }
@@ -791,6 +794,8 @@ async fn sign_transaction(
         Ok(tx) => tx,
         Err(e) => {
             tracing::error!("Signing failed: {}", e);
+            // Record failure metric
+            metrics::counter!("sign_operations_total", "network" => payload.network.clone(), "status" => "failed").increment(1);
             // Audit log the failure - properly awaited
             let _ = state
                 .db
@@ -822,6 +827,9 @@ async fn sign_transaction(
         )
         .await
         .map_err(|e| tracing::error!("Failed to write audit log: {}", e));
+
+    // Record success metric
+    metrics::counter!("sign_operations_total", "network" => payload.network.clone(), "status" => "success").increment(1);
 
     Ok(Json(serde_json::json!({
         "signed_tx": signed_tx
