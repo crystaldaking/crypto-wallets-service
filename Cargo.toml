@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 # Web & API
 axum = "0.7"
-tokio = { version = "1", features = ["full", "test-util"] }
+tokio = { version = "1", features = ["full"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["trace", "cors", "request-id", "util", "catch-panic"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -62,3 +62,4 @@ tonic-build = "0.12"
 [dev-dependencies]
 testcontainers = "0.26.3"
 testcontainers-modules = { version = "0.14.0", features = ["postgres"] }
+tokio = { version = "1", features = ["test-util"] }
