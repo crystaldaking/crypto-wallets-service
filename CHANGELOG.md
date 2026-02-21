@@ -16,6 +16,7 @@ All notable changes to this project will be documented in this file.
 - Circuit breaker states: Closed (normal), Open (failing), HalfOpen (recovery testing)
 - Return 503 Service Unavailable when circuit is open
 - Add circuit state to health check endpoint
+- Improve error handling and tracing for address derivation
 
 ### Performance
 - Add LRU caching for derived addresses (default cache size: 1000)

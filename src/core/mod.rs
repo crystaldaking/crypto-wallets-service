@@ -160,11 +160,23 @@ impl WalletManager {
         // Cache miss - derive the address
         tracing::debug!("Address cache miss for {:?} index {}", network, index);
         let mut seed_bytes = self.vault.decrypt(encrypted_seed).await?;
-        let mnemonic =
-            Mnemonic::<English>::new_from_phrase(&String::from_utf8(seed_bytes.clone())?)?;
+        let mnemonic_phrase = String::from_utf8(seed_bytes.clone())
+            .map_err(|e| {
+                tracing::error!("Failed to convert seed bytes to UTF-8: {}", e);
+                e
+            })?;
+        let mnemonic = Mnemonic::<English>::new_from_phrase(&mnemonic_phrase)
+            .map_err(|e| {
+                tracing::error!("Failed to create mnemonic from phrase: {}", e);
+                e
+            })?;
         seed_bytes.zeroize();
 
-        let address = Self::derive_address_from_mnemonic(&mnemonic, network, index)?;
+        let address = Self::derive_address_from_mnemonic(&mnemonic, network, index)
+            .map_err(|e| {
+                tracing::error!("Failed to derive address for {:?} index {}: {}", network, index, e);
+                e
+            })?;
 
         // Store in cache
         {
@@ -224,7 +236,8 @@ impl WalletManager {
             Network::Solana => {
                 let signing_key_bip32: &SigningKey = derived_xpriv.as_ref();
                 let seed_32: [u8; 32] =
-                    <[u8; 32]>::try_from(signing_key_bip32.to_bytes().as_ref())?;
+                    <[u8; 32]>::try_from(signing_key_bip32.to_bytes().as_ref())
+                    .map_err(|_| anyhow::anyhow!("Invalid signing key length for Solana: expected 32 bytes"))?;
                 let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed_32);
                 let public_key = signing_key.verifying_key();
                 Ok(Address::new(
@@ -234,7 +247,8 @@ impl WalletManager {
             Network::Ton => {
                 let signing_key_bip32: &SigningKey = derived_xpriv.as_ref();
                 let seed_32: [u8; 32] =
-                    <[u8; 32]>::try_from(signing_key_bip32.to_bytes().as_ref())?;
+                    <[u8; 32]>::try_from(signing_key_bip32.to_bytes().as_ref())
+                    .map_err(|_| anyhow::anyhow!("Invalid signing key length for TON: expected 32 bytes"))?;
                 let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed_32);
                 let public_key = signing_key.verifying_key();
 
